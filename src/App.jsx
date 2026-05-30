@@ -1,5 +1,4 @@
 import { useState, useRef, useEffect } from "react";
-import { supabase } from './lib/supabase'
 
 /*
   BuildEasy v9 — SaaS BTP Premium
@@ -160,84 +159,6 @@ const calcH = h => {
   return Math.max(0, Math.round(((dh*60+dm)-(ah*60+am)-(h.pause||0))/6)/10);
 };
 const isoD = d => d instanceof Date ? d.toISOString().split("T")[0] : d;
-
-const SB_OK = Boolean(
-  import.meta.env.VITE_SUPABASE_URL?.trim() &&
-  import.meta.env.VITE_SUPABASE_ANON_KEY?.trim() &&
-  !String(import.meta.env.VITE_SUPABASE_URL).includes("XXXX")
-);
-
-const n = v => (v == null ? 0 : Number(v));
-const prioDb = p => ({ 1: "haute", 2: "normale", 3: "basse" }[Number(p)] ?? "normale");
-const prioApp = p => ({ haute: 1, normale: 2, basse: 3 }[p] ?? (Number(p) || 2));
-const chStatDb = s => ({ actif: "en_cours", planif: "en_attente", livre: "termine" }[s] ?? s);
-const chStatApp = s => ({ en_cours: "actif", en_attente: "planif", termine: "livre" }[s] ?? s);
-const tStatDb = s => ({ planif: "a_faire" }[s] ?? s);
-const tStatApp = s => ({ a_faire: "planif" }[s] ?? s);
-const facStatApp = s => ({ payee: "encaissee", en_attente: "emise", en_retard: "retard" }[s] ?? s);
-const avStatDb = s => ({ signe: "accepte", attente: "en_attente", refuse: "refuse" }[s] ?? s);
-const avStatApp = s => ({ accepte: "signe", en_attente: "attente" }[s] ?? s);
-const punchStatDb = s => ({ encours: "en_cours", clos: "resolu" }[s] ?? s);
-const punchStatApp = s => ({ en_cours: "encours", resolu: "clos" }[s] ?? s);
-const frD = iso => {
-  if (!iso) return "";
-  const s = String(iso).slice(0, 10);
-  const [y, m, d] = s.split("-");
-  return y && m && d ? `${d}/${m}/${y.slice(2)}` : String(iso);
-};
-
-const mapCh = r => ({
-  id: r.id, nom: r.nom, client: r.client, tel: r.tel ?? "", corps: r.corps ?? "",
-  statut: chStatApp(r.statut), av: n(r.avancement), budget: n(r.budget), dep: n(r.depenses),
-  debut: frD(r.debut), fin: frD(r.fin), equipe: Array.isArray(r.equipe) ? r.equipe : [],
-  prio: prioApp(r.priorite), note: r.note ?? "", adresse: r.adresse ?? "", meteo: r.meteo ?? "—", rdv: "",
-});
-const mapT = r => ({
-  id: r.id, chId: r.chantier_id, titre: r.titre, resp: r.responsable ?? "",
-  debut: frD(r.debut), fin: frD(r.fin), statut: tStatApp(r.statut), prio: prioApp(r.priorite),
-  duree: n(r.duree), check: r.statut === "fait",
-});
-const mapF = r => ({
-  id: r.id, chId: r.chantier_id, ch: r.chantier ?? "", client: r.client ?? "", mt: n(r.montant),
-  statut: facStatApp(r.statut), date: frD(r.date), ech: frD(r.echeance),
-});
-const mapM = r => ({
-  id: r.id, chId: r.chantier_id, auteur: r.auteur, role: r.role ?? "", txt: r.texte,
-  h: r.heure ?? "", d: frD(r.date) || String(r.date ?? ""),
-});
-const mapA = r => ({
-  id: r.id, chId: r.chantier_id, ref: `AV-${r.id}`, titre: r.titre, desc: r.description ?? "",
-  mt: n(r.montant), statut: avStatApp(r.statut), dc: frD(r.date_creation), ds: frD(r.date_validation), par: r.valide_par ?? "",
-});
-const mapR = r => ({
-  id: r.id, chId: r.chantier_id, date: frD(r.date), auteur: r.auteur ?? "", meteo: r.meteo ?? "",
-  av: r.avancement ?? "", incidents: r.problemes ?? "RAS",
-  presences: Array.isArray(r.presences) ? r.presences : [], photos: n(r.photos),
-});
-const mapH = r => ({
-  id: r.id, nom: r.membre_nom, chId: r.chantier_id, date: String(r.date ?? "").slice(0, 10),
-  arr: r.arrivee ?? "", dep: r.depart ?? "", pause: n(r.pause_min), desc: r.description ?? "", valide: Boolean(r.valide),
-});
-const mapP = r => ({
-  id: r.id, chId: r.chantier_id, ref: `RES-${r.id}`, titre: r.titre, desc: r.description ?? "",
-  corps: r.categorie ?? "Autre", prio: prioApp(r.priorite), statut: punchStatApp(r.statut),
-  sig: r.signale_par ?? "", date: frD(r.date_signalement), clos: frD(r.date_resolution), ass: r.assigne_a ?? "",
-});
-const mapE = r => ({
-  id: r.id, nom: r.nom, fn: r.role ?? "", tel: r.tel ?? "",
-  chIds: Array.isArray(r.chantiers) ? r.chantiers : [], statut: r.dispo ? "present" : "absent",
-});
-
-async function sbLoad(table) {
-  const { data, error } = await supabase.from(table).select("*").order("id");
-  if (error) {
-    console.warn(`[BuildEasy] ${table}:`, error.message);
-    return null;
-  }
-  return data;
-}
-
-const pick = (rows, init) => (rows?.length ? rows : init);
 
 /* ─── CSS ─── */
 const CSS = `
@@ -1514,10 +1435,11 @@ function AppMobile({ user, onLogout }) {
   const perms=PERMS[user.role];
   const [screen,setScreen]=useState("home");
   const [sheet,setSheet]=useState(null);
+
   const [chantiers,setChantiers]=useState(INIT_CH);
   const [taches,setTaches]=useState(INIT_TACHES);
-  const [factures,setFactures]=useState(INIT_FAC);
-  const [equipe,setEquipe]=useState(INIT_EQ);
+  const [factures]=useState(INIT_FAC);
+  const [equipe]=useState(INIT_EQ);
   const [rapports,setRapports]=useState(INIT_RAPPORTS);
   const [messages,setMessages]=useState(INIT_MSG);
   const [avenants,setAvenants]=useState(INIT_AV);
@@ -1528,137 +1450,20 @@ function AppMobile({ user, onLogout }) {
   const [docs]=useState(INIT_DOCS);
   const [situations]=useState(INIT_SITUATIONS);
 
-  useEffect(() => {
-    const load = async () => {
-      const { data: ch } = await supabase.from('chantiers').select('*')
-      if (ch?.length > 0) setChantiers(ch)
-      const { data: ta } = await supabase.from('taches').select('*')
-      if (ta?.length > 0) setTaches(ta)
-      const { data: av } = await supabase.from('avenants').select('*')
-      if (av?.length > 0) setAvenants(av)
-      const { data: pu } = await supabase.from('punchlist').select('*')
-      if (pu?.length > 0) setPunch(pu)
-      const { data: ra } = await supabase.from('rapports').select('*')
-      if (ra?.length > 0) setRapports(ra)
-      const { data: me } = await supabase.from('messages').select('*')
-      if (me?.length > 0) setMessages(me)
-    }
-    load()
-  }, [])
-
   const data={chantiers,taches,factures,equipe,rapports,messages,avenants,heures,punch,incidents,photos,docs,situations};
 
   /* Actions */
-  const editC=async(id,k,v)=>{
-    setChantiers(p=>p.map(c=>c.id===id?{...c,[k]:v}:c));
-    if(!SB_OK) return;
-    const col={av:"avancement",dep:"depenses",prio:"priorite",statut:"statut"}[k]??k;
-    let val=v;
-    if(k==="prio") val=prioDb(v);
-    if(k==="statut") val=chStatDb(v);
-    const { error }=await supabase.from("chantiers").update({[col]:val}).eq("id",id);
-    if(error) console.error("[BuildEasy] editC:", error.message);
-  };
-  const editT=async(id,k,v)=>{
-    setTaches(p=>p.map(t=>t.id===id?{...t,[k]:v}:t));
-    if(!SB_OK) return;
-    const col={chId:"chantier_id",resp:"responsable"}[k]??k;
-    let val=v;
-    if(k==="statut") val=tStatDb(v);
-    if(k==="prio") val=prioDb(v);
-    const { error }=await supabase.from("taches").update({[col]:val}).eq("id",id);
-    if(error) console.error("[BuildEasy] editT:", error.message);
-  };
-  const reloadChantiers=async()=>{
-    const { data:ch, error }=await supabase.from("chantiers").select("*");
-    if(!error&&ch&&ch.length>0) setChantiers(ch.map(mapCh));
-  };
-  const addC=async f=>{
-    console.log('Tentative insertion Supabase...')
-    const newCh={
-      nom:f.nom,
-      client:f.client,
-      tel:f.tel||'',
-      corps:f.corps||'',
-      statut:'planif',
-      avancement:0,
-      budget:parseInt(f.budget)||0,
-      depenses:0,
-      debut:f.debut||'',
-      fin:f.fin||'',
-      priorite:parseInt(f.prio)||2,
-      note:f.note||'',
-      adresse:f.adresse||''
-    };
-    const { data, error }=await supabase.from('chantiers').insert([newCh]).select();
-    console.log('Résultat:', data, 'Erreur:', error)
-    if(data&&data.length>0){
-      setChantiers(p=>[...p,data[0]]);
-    }else{
-      setChantiers(p=>[...p,{id:Date.now(),...newCh}]);
-    }
-  };
-  const addT=async f=>{
-    const local={id:Date.now(),chId:parseInt(f.chId),titre:f.titre,resp:f.resp||"",debut:f.debut||"",fin:f.fin||"",statut:"planif",duree:Math.max(1,f.duree||1),prio:parseInt(f.prio)||2,check:false};
-    if(!SB_OK){ setTaches(p=>[...p,local]); return; }
-    const row={chantier_id:parseInt(f.chId),titre:f.titre,responsable:f.resp||"",debut:f.debut||null,fin:f.fin||null,statut:"a_faire",duree:Math.max(1,f.duree||1),priorite:prioDb(f.prio)};
-    const { data, error }=await supabase.from("taches").insert(row).select().single();
-    if(error){ console.error("[BuildEasy] addT:", error.message); setTaches(p=>[...p,local]); return; }
-    setTaches(p=>[...p,mapT(data)]);
-  };
-  const addR=async f=>{
-    const local={id:Date.now(),chId:parseInt(f.chId)||0,date:f.date||"",auteur:f.auteur||"",meteo:f.meteo||"",av:f.av||"",incidents:f.incidents||"RAS",presences:f.presences||[],photos:0};
-    if(!SB_OK){ setRapports(p=>[...p,local]); return; }
-    const row={chantier_id:parseInt(f.chId)||0,date:isoD(f.date)||null,auteur:f.auteur||"",meteo:f.meteo||"",avancement:f.av||"",problemes:f.incidents||"RAS",presences:f.presences||[],photos:0};
-    const { data, error }=await supabase.from("rapports").insert(row).select().single();
-    if(error){ console.error("[BuildEasy] addR:", error.message); setRapports(p=>[...p,local]); return; }
-    setRapports(p=>[...p,mapR(data)]);
-  };
-  const sendMsg=async m=>{
-    const local={id:Date.now(),...m};
-    if(!SB_OK){ setMessages(p=>[...p,local]); return; }
-    const row={chantier_id:m.chId,auteur:m.auteur,role:m.role||"",texte:m.txt,heure:m.h||"",date:isoD(m.d)||null};
-    const { data, error }=await supabase.from("messages").insert(row).select().single();
-    if(error){ console.error("[BuildEasy] sendMsg:", error.message); setMessages(p=>[...p,local]); return; }
-    setMessages(p=>[...p,mapM(data)]);
-  };
-  const addAv=async f=>{
-    const local={id:Date.now(),...f};
-    if(!SB_OK){ setAvenants(p=>[...p,local]); return; }
-    const row={chantier_id:f.chId,titre:f.titre,description:f.desc||"",montant:parseInt(f.mt)||0,statut:"en_attente",date_creation:isoD(f.dc)||null,date_validation:null,valide_par:""};
-    const { data, error }=await supabase.from("avenants").insert(row).select().single();
-    if(error){ console.error("[BuildEasy] addAv:", error.message); setAvenants(p=>[...p,local]); return; }
-    setAvenants(p=>[...p,{...mapA(data),ref:f.ref||`AV-${data.id}`}]);
-  };
-  const validerAv=async(id,s,par)=>{
-    const ds=new Date().toLocaleDateString("fr-FR");
-    setAvenants(p=>p.map(a=>a.id===id?{...a,statut:s,par,ds}:a));
-    if(!SB_OK) return;
-    const { error }=await supabase.from("avenants").update({statut:avStatDb(s),valide_par:par,date_validation:isoD(new Date())}).eq("id",id);
-    if(error) console.error("[BuildEasy] validerAv:", error.message);
-  };
-  const validerH=async(id,par)=>{
-    setHeures(p=>p.map(h=>h.id===id?{...h,valide:true}:h));
-    if(!SB_OK) return;
-    const { error }=await supabase.from("heures").update({valide:true,validee_par:par}).eq("id",id);
-    if(error) console.error("[BuildEasy] validerH:", error.message);
-  };
-  const addPunch=async f=>{
-    const local={id:Date.now(),...f};
-    if(!SB_OK){ setPunch(p=>[...p,local]); return; }
-    const row={chantier_id:f.chId,titre:f.titre,description:f.desc||"",categorie:f.corps||"Autre",priorite:prioDb(f.prio),statut:"ouvert",signale_par:f.sig||"",date_signalement:isoD(new Date()),date_resolution:null,assigne_a:f.ass||"",photos:0};
-    const { data, error }=await supabase.from("punchlist").insert(row).select().single();
-    if(error){ console.error("[BuildEasy] addPunch:", error.message); setPunch(p=>[...p,local]); return; }
-    setPunch(p=>[...p,{...mapP(data),ref:f.ref||`RES-${data.id}`}]);
-  };
-  const updatePunch=async(id,s)=>{
-    const clos=s==="clos"?new Date().toLocaleDateString("fr-FR"):"";
-    setPunch(p=>p.map(i=>i.id===id?{...i,statut:s,clos}:i));
-    if(!SB_OK) return;
-    const row={statut:punchStatDb(s),date_resolution:s==="clos"?isoD(new Date()):null};
-    const { error }=await supabase.from("punchlist").update(row).eq("id",id);
-    if(error) console.error("[BuildEasy] updatePunch:", error.message);
-  };
+  const editC=(id,k,v)=>setChantiers(p=>p.map(c=>c.id===id?{...c,[k]:v}:c));
+  const editT=(id,k,v)=>setTaches(p=>p.map(t=>t.id===id?{...t,[k]:v}:t));
+  const addC=f=>setChantiers(p=>[...p,{id:Date.now(),nom:f.nom,client:f.client,tel:f.tel||"",corps:f.corps||"",statut:"planif",av:0,budget:parseInt(f.budget)||0,dep:0,debut:f.debut||"",fin:f.fin||"",equipe:[],prio:parseInt(f.prio)||2,note:f.note||"",adresse:f.adresse||"",meteo:"—",rdv:""}]);
+  const addT=f=>setTaches(p=>[...p,{id:Date.now(),chId:parseInt(f.chId),titre:f.titre,resp:f.resp||"",debut:f.debut||"",fin:f.fin||"",statut:"planif",duree:Math.max(1,f.duree||1),prio:parseInt(f.prio)||2,check:false}]);
+  const addR=f=>setRapports(p=>[...p,{id:Date.now(),chId:parseInt(f.chId)||0,date:f.date||"",auteur:f.auteur||"",meteo:f.meteo||"",av:f.av||"",incidents:f.incidents||"RAS",presences:f.presences||[]}]);
+  const sendMsg=m=>setMessages(p=>[...p,{id:Date.now(),...m}]);
+  const addAv=f=>setAvenants(p=>[...p,{id:Date.now(),...f}]);
+  const validerAv=(id,s,par)=>setAvenants(p=>p.map(a=>a.id===id?{...a,statut:s,par,ds:new Date().toLocaleDateString("fr-FR")}:a));
+  const validerH=(id,par)=>setHeures(p=>p.map(h=>h.id===id?{...h,valide:true}:h));
+  const addPunch=f=>setPunch(p=>[...p,{id:Date.now(),...f}]);
+  const updatePunch=(id,s)=>setPunch(p=>p.map(i=>i.id===id?{...i,statut:s,clos:s==="clos"?new Date().toLocaleDateString("fr-FR"):""}:i));
   const addIncident=f=>setIncidents(p=>[...p,{id:Date.now(),...f}]);
 
   const retards=factures.filter(f=>f.statut==="retard").length;
