@@ -1,279 +1,472 @@
 -- BuildEasy — Schéma Supabase
 -- Exécuter dans : Supabase Dashboard → SQL Editor → New query → Run
+-- Chaque utilisateur authentifié ne voit que les données de son organisation (RLS).
 
--- ─────────────────────────────────────────────
--- TABLES
--- ─────────────────────────────────────────────
+-- Extensions
+create extension if not exists "pgcrypto";
 
-CREATE TABLE IF NOT EXISTS chantiers (
-  id BIGSERIAL PRIMARY KEY,
-  nom TEXT NOT NULL DEFAULT '',
-  client TEXT NOT NULL DEFAULT '',
-  tel TEXT DEFAULT '',
-  corps TEXT DEFAULT '',
-  statut TEXT NOT NULL DEFAULT 'en_attente',
-  avancement INTEGER NOT NULL DEFAULT 0,
-  budget NUMERIC NOT NULL DEFAULT 0,
-  depenses NUMERIC NOT NULL DEFAULT 0,
-  debut DATE,
-  fin DATE,
-  equipe JSONB NOT NULL DEFAULT '[]'::jsonb,
-  priorite TEXT NOT NULL DEFAULT 'normale',
-  note TEXT DEFAULT '',
-  adresse TEXT DEFAULT '',
-  meteo TEXT DEFAULT '📋',
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+-- ─── Organisations & profils ───────────────────────────────────────────────
+
+create table if not exists public.organizations (
+  id uuid primary key default gen_random_uuid(),
+  name text not null default 'Mon entreprise',
+  plan_id text not null default 'starter' check (plan_id in ('starter', 'pro', 'entreprise')),
+  created_at timestamptz not null default now()
 );
 
-CREATE TABLE IF NOT EXISTS taches (
-  id BIGSERIAL PRIMARY KEY,
-  chantier_id BIGINT NOT NULL REFERENCES chantiers(id) ON DELETE CASCADE,
-  titre TEXT NOT NULL DEFAULT '',
-  responsable TEXT DEFAULT '',
-  debut DATE,
-  fin DATE,
-  statut TEXT NOT NULL DEFAULT 'a_faire',
-  duree INTEGER NOT NULL DEFAULT 1,
-  priorite TEXT NOT NULL DEFAULT 'normale'
+create table if not exists public.profiles (
+  id uuid primary key references auth.users (id) on delete cascade,
+  org_id uuid not null references public.organizations (id) on delete cascade,
+  nom text not null,
+  role text not null check (role in ('admin', 'chef', 'employe', 'client')),
+  email text not null,
+  ch_ids bigint[] not null default '{}',
+  vierge boolean not null default true,
+  created_at timestamptz not null default now()
 );
 
-CREATE TABLE IF NOT EXISTS factures (
-  id TEXT PRIMARY KEY,
-  chantier_id BIGINT NOT NULL REFERENCES chantiers(id) ON DELETE CASCADE,
-  chantier TEXT DEFAULT '',
-  client TEXT DEFAULT '',
-  montant NUMERIC NOT NULL DEFAULT 0,
-  statut TEXT NOT NULL DEFAULT 'brouillon',
-  date DATE,
-  echeance DATE
+create index if not exists profiles_org_id_idx on public.profiles (org_id);
+
+-- Org courante de l'utilisateur connecté (security invoker)
+create or replace function public.user_org_id()
+returns uuid
+language sql
+stable
+set search_path = public
+as $$
+  select org_id from public.profiles where id = (select auth.uid())
+$$;
+
+-- Nouvel utilisateur → organisation + profil gérant
+create or replace function public.handle_new_user()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  new_org_id uuid;
+  user_nom text;
+  user_role text;
+begin
+  user_nom := coalesce(new.raw_user_meta_data ->> 'nom', split_part(new.email, '@', 1));
+  user_role := coalesce(new.raw_user_meta_data ->> 'role', 'admin');
+
+  insert into public.organizations (name, plan_id)
+  values (coalesce(new.raw_user_meta_data ->> 'org_name', user_nom || ' — BuildEasy'), 'starter')
+  returning id into new_org_id;
+
+  insert into public.profiles (id, org_id, nom, role, email, ch_ids, vierge)
+  values (
+    new.id,
+    new_org_id,
+    user_nom,
+    user_role,
+    new.email,
+    '{}',
+    coalesce((new.raw_user_meta_data ->> 'vierge')::boolean, true)
+  );
+
+  return new;
+end;
+$$;
+
+drop trigger if exists on_auth_user_created on auth.users;
+create trigger on_auth_user_created
+  after insert on auth.users
+  for each row execute function public.handle_new_user();
+
+-- ─── Tables métier (toutes scopées par org_id) ─────────────────────────────
+
+create table if not exists public.chantiers (
+  id bigint generated always as identity primary key,
+  org_id uuid not null references public.organizations (id) on delete cascade,
+  nom text default '',
+  client text default '',
+  tel text default '',
+  corps text default '',
+  statut text default 'planif',
+  av int default 0,
+  budget numeric default 0,
+  dep numeric default 0,
+  debut text default '',
+  fin text default '',
+  rdv text default '',
+  meteo text default '—',
+  prio int default 2,
+  note text default '',
+  adresse text default '',
+  taux numeric default 35,
+  created_at timestamptz not null default now()
 );
 
-CREATE TABLE IF NOT EXISTS messages (
-  id BIGSERIAL PRIMARY KEY,
-  chantier_id BIGINT NOT NULL REFERENCES chantiers(id) ON DELETE CASCADE,
-  auteur TEXT NOT NULL DEFAULT '',
-  role TEXT DEFAULT '',
-  texte TEXT NOT NULL DEFAULT '',
-  heure TEXT DEFAULT '',
-  date DATE
+create table if not exists public.taches (
+  id bigint generated always as identity primary key,
+  org_id uuid not null references public.organizations (id) on delete cascade,
+  ch_id bigint references public.chantiers (id) on delete set null,
+  titre text default '',
+  resp text default '',
+  debut text default '',
+  fin text default '',
+  statut text default 'planif',
+  prio int default 2,
+  duree int default 1,
+  created_at timestamptz not null default now()
 );
 
-CREATE TABLE IF NOT EXISTS avenants (
-  id BIGSERIAL PRIMARY KEY,
-  chantier_id BIGINT NOT NULL REFERENCES chantiers(id) ON DELETE CASCADE,
-  titre TEXT NOT NULL DEFAULT '',
-  description TEXT DEFAULT '',
-  montant NUMERIC NOT NULL DEFAULT 0,
-  statut TEXT NOT NULL DEFAULT 'en_attente',
-  date_creation DATE,
-  date_validation DATE,
-  valide_par TEXT DEFAULT ''
+create table if not exists public.factures (
+  id text primary key,
+  org_id uuid not null references public.organizations (id) on delete cascade,
+  ch_id bigint references public.chantiers (id) on delete set null,
+  client text default '',
+  mt numeric default 0,
+  statut text default 'emise',
+  date text default '',
+  ech text default '',
+  description text default ''
 );
 
-CREATE TABLE IF NOT EXISTS heures (
-  id BIGSERIAL PRIMARY KEY,
-  membre_id BIGINT,
-  membre_nom TEXT NOT NULL DEFAULT '',
-  chantier_id BIGINT NOT NULL REFERENCES chantiers(id) ON DELETE CASCADE,
-  date DATE NOT NULL,
-  arrivee TEXT DEFAULT '',
-  depart TEXT DEFAULT '',
-  pause_min INTEGER NOT NULL DEFAULT 0,
-  description TEXT DEFAULT '',
-  valide BOOLEAN NOT NULL DEFAULT false,
-  validee_par TEXT DEFAULT ''
+create table if not exists public.equipe (
+  id bigint generated always as identity primary key,
+  org_id uuid not null references public.organizations (id) on delete cascade,
+  nom text default '',
+  fn text default '',
+  tel text default '',
+  ch_ids bigint[] default '{}',
+  statut text default 'present',
+  taux_h numeric default 35,
+  qual text default ''
 );
 
-CREATE TABLE IF NOT EXISTS punchlist (
-  id BIGSERIAL PRIMARY KEY,
-  chantier_id BIGINT NOT NULL REFERENCES chantiers(id) ON DELETE CASCADE,
-  titre TEXT NOT NULL DEFAULT '',
-  description TEXT DEFAULT '',
-  categorie TEXT DEFAULT 'Autre',
-  priorite TEXT NOT NULL DEFAULT 'normale',
-  statut TEXT NOT NULL DEFAULT 'ouvert',
-  signale_par TEXT DEFAULT '',
-  date_signalement DATE,
-  date_resolution DATE,
-  assigne_a TEXT DEFAULT '',
-  photos INTEGER NOT NULL DEFAULT 0
+create table if not exists public.heures (
+  id bigint generated always as identity primary key,
+  org_id uuid not null references public.organizations (id) on delete cascade,
+  nom text default '',
+  ch_id bigint references public.chantiers (id) on delete set null,
+  date text default '',
+  arr text default '',
+  dep text default '',
+  pause int default 0,
+  description text default '',
+  val boolean default false,
+  panier boolean default false,
+  trajet boolean default false,
+  zone int default 1
 );
 
-CREATE TABLE IF NOT EXISTS rapports (
-  id BIGSERIAL PRIMARY KEY,
-  chantier_id BIGINT NOT NULL REFERENCES chantiers(id) ON DELETE CASCADE,
-  date DATE,
-  auteur TEXT DEFAULT '',
-  meteo TEXT DEFAULT '☀️',
-  temperature TEXT DEFAULT '',
-  avancement TEXT DEFAULT '',
-  problemes TEXT DEFAULT 'RAS',
-  presences JSONB NOT NULL DEFAULT '[]'::jsonb,
-  photos INTEGER NOT NULL DEFAULT 0
+create table if not exists public.commandes (
+  id bigint generated always as identity primary key,
+  org_id uuid not null references public.organizations (id) on delete cascade,
+  ref text default '',
+  ch_id bigint references public.chantiers (id) on delete set null,
+  fournisseur text default '',
+  fournisseur_id bigint,
+  objet text default '',
+  mt numeric default 0,
+  statut text default 'attente',
+  date text default '',
+  livraison text default '',
+  valide_par text default '',
+  urgent boolean default false
 );
 
-CREATE TABLE IF NOT EXISTS equipe (
-  id BIGSERIAL PRIMARY KEY,
-  nom TEXT NOT NULL DEFAULT '',
-  role TEXT DEFAULT '',
-  tel TEXT DEFAULT '',
-  heures INTEGER NOT NULL DEFAULT 0,
-  chantiers JSONB NOT NULL DEFAULT '[]'::jsonb,
-  dispo BOOLEAN NOT NULL DEFAULT true
+create table if not exists public.devis (
+  id bigint generated always as identity primary key,
+  org_id uuid not null references public.organizations (id) on delete cascade,
+  ref text default '',
+  client text default '',
+  objet text default '',
+  date text default '',
+  validite text default '',
+  statut text default 'brouillon',
+  lots jsonb not null default '[]'::jsonb,
+  remise numeric default 0,
+  tva numeric default 20
 );
 
--- Index utiles
-CREATE INDEX IF NOT EXISTS idx_taches_chantier ON taches(chantier_id);
-CREATE INDEX IF NOT EXISTS idx_messages_chantier ON messages(chantier_id);
-CREATE INDEX IF NOT EXISTS idx_heures_date ON heures(date);
+create table if not exists public.incidents (
+  id bigint generated always as identity primary key,
+  org_id uuid not null references public.organizations (id) on delete cascade,
+  ch_id bigint references public.chantiers (id) on delete set null,
+  ref text default '',
+  type text default 'autre',
+  description text default '',
+  prio int default 2,
+  statut text default 'ouvert',
+  sig text default '',
+  date text default '',
+  screen text default '',
+  ts bigint default (extract(epoch from now()) * 1000)::bigint,
+  ref_cmd bigint,
+  fournisseur_id bigint,
+  bloquant boolean default false
+);
 
--- ─────────────────────────────────────────────
--- ROW LEVEL SECURITY
--- ─────────────────────────────────────────────
+create table if not exists public.avenants (
+  id bigint generated always as identity primary key,
+  org_id uuid not null references public.organizations (id) on delete cascade,
+  ch_id bigint references public.chantiers (id) on delete set null,
+  ref text default '',
+  titre text default '',
+  description text default '',
+  mt numeric default 0,
+  statut text default 'attente',
+  dc text default '',
+  ds text default '',
+  par text default ''
+);
 
-ALTER TABLE chantiers ENABLE ROW LEVEL SECURITY;
-ALTER TABLE taches ENABLE ROW LEVEL SECURITY;
-ALTER TABLE factures ENABLE ROW LEVEL SECURITY;
-ALTER TABLE messages ENABLE ROW LEVEL SECURITY;
-ALTER TABLE avenants ENABLE ROW LEVEL SECURITY;
-ALTER TABLE heures ENABLE ROW LEVEL SECURITY;
-ALTER TABLE punchlist ENABLE ROW LEVEL SECURITY;
-ALTER TABLE rapports ENABLE ROW LEVEL SECURITY;
-ALTER TABLE equipe ENABLE ROW LEVEL SECURITY;
+create table if not exists public.situations (
+  id bigint generated always as identity primary key,
+  org_id uuid not null references public.organizations (id) on delete cascade,
+  ch_id bigint references public.chantiers (id) on delete set null,
+  ref text default '',
+  num int default 1,
+  titre text default '',
+  av int default 0,
+  mt numeric default 0,
+  statut text default 'emise',
+  date text default '',
+  ech text default '',
+  description text default ''
+);
 
--- Politiques MVP : accès via clé anon (auth Supabase à brancher plus tard)
-DO $$
-DECLARE
-  t TEXT;
-BEGIN
-  FOREACH t IN ARRAY ARRAY[
-    'chantiers', 'taches', 'factures', 'messages', 'avenants',
-    'heures', 'punchlist', 'rapports', 'equipe'
-  ]
-  LOOP
-    EXECUTE format('DROP POLICY IF EXISTS "allow_anon_select" ON %I', t);
-    EXECUTE format('DROP POLICY IF EXISTS "allow_anon_insert" ON %I', t);
-    EXECUTE format('DROP POLICY IF EXISTS "allow_anon_update" ON %I', t);
-    EXECUTE format('DROP POLICY IF EXISTS "allow_anon_delete" ON %I', t);
+create table if not exists public.rapports (
+  id bigint generated always as identity primary key,
+  org_id uuid not null references public.organizations (id) on delete cascade,
+  ch_id bigint references public.chantiers (id) on delete set null,
+  date text default '',
+  auteur text default '',
+  meteo text default '',
+  av text default '',
+  incidents text default 'RAS',
+  presences jsonb default '[]'::jsonb
+);
 
-    EXECUTE format(
-      'CREATE POLICY "allow_anon_select" ON %I FOR SELECT TO anon, authenticated USING (true)',
+create table if not exists public.messages (
+  id bigint generated always as identity primary key,
+  org_id uuid not null references public.organizations (id) on delete cascade,
+  ch_id bigint references public.chantiers (id) on delete set null,
+  auteur text default '',
+  role text default '',
+  txt text default '',
+  h text default '',
+  d text default ''
+);
+
+create table if not exists public.clients (
+  id bigint generated always as identity primary key,
+  org_id uuid not null references public.organizations (id) on delete cascade,
+  nom text default '',
+  tel text default '',
+  email text default '',
+  adresse text default '',
+  statut text default 'prospect',
+  ca numeric default 0,
+  nb_chantiers int default 0,
+  note text default ''
+);
+
+create table if not exists public.fournisseurs (
+  id bigint generated always as identity primary key,
+  org_id uuid not null references public.organizations (id) on delete cascade,
+  nom text default '',
+  tel text default '',
+  cat text default 'materiaux',
+  url text default ''
+);
+
+create table if not exists public.conges (
+  id bigint generated always as identity primary key,
+  org_id uuid not null references public.organizations (id) on delete cascade,
+  nom text default '',
+  type text default 'conge',
+  debut text default '',
+  fin text default '',
+  jours int default 1,
+  statut text default 'attente',
+  motif text default ''
+);
+
+create table if not exists public.agenda (
+  id bigint generated always as identity primary key,
+  org_id uuid not null references public.organizations (id) on delete cascade,
+  date text default '',
+  heure text default '',
+  titre text default '',
+  ch_id bigint references public.chantiers (id) on delete set null,
+  type text default 'reunion',
+  duree int default 60,
+  lieu text default '',
+  pour text default ''
+);
+
+create table if not exists public.punch (
+  id bigint generated always as identity primary key,
+  org_id uuid not null references public.organizations (id) on delete cascade,
+  ch_id bigint references public.chantiers (id) on delete set null,
+  ref text default '',
+  titre text default '',
+  description text default '',
+  corps text default '',
+  prio int default 2,
+  statut text default 'ouvert',
+  sig text default '',
+  date text default '',
+  clos text default '',
+  ass text default ''
+);
+
+create table if not exists public.notes (
+  id bigint generated always as identity primary key,
+  org_id uuid not null references public.organizations (id) on delete cascade,
+  ch_id bigint references public.chantiers (id) on delete set null,
+  auteur text default '',
+  txt text default '',
+  ts bigint default (extract(epoch from now()) * 1000)::bigint,
+  date text default ''
+);
+
+create table if not exists public.planning_eq (
+  id bigint generated always as identity primary key,
+  org_id uuid not null references public.organizations (id) on delete cascade,
+  nom text default '',
+  sem jsonb not null default '[]'::jsonb
+);
+
+-- Index org_id
+do $$
+declare t text;
+begin
+  foreach t in array array[
+    'chantiers','taches','factures','equipe','heures','commandes','devis',
+    'incidents','avenants','situations','rapports','messages','clients',
+    'fournisseurs','conges','agenda','punch','notes','planning_eq'
+  ] loop
+    execute format(
+      'create index if not exists %I_org_id_idx on public.%I (org_id)',
+      t, t
+    );
+  end loop;
+end $$;
+
+-- ─── RLS ─────────────────────────────────────────────────────────────────
+
+alter table public.organizations enable row level security;
+alter table public.profiles enable row level security;
+
+do $$
+declare t text;
+begin
+  foreach t in array array[
+    'chantiers','taches','factures','equipe','heures','commandes','devis',
+    'incidents','avenants','situations','rapports','messages','clients',
+    'fournisseurs','conges','agenda','punch','notes','planning_eq'
+  ] loop
+    execute format('alter table public.%I enable row level security', t);
+  end loop;
+end $$;
+
+-- Organizations : lecture / mise à jour de sa propre org
+create policy "org_select_own" on public.organizations
+  for select to authenticated
+  using (id = public.user_org_id());
+
+create policy "org_update_own" on public.organizations
+  for update to authenticated
+  using (id = public.user_org_id())
+  with check (id = public.user_org_id());
+
+-- Profiles : membres de la même org
+create policy "profiles_select_org" on public.profiles
+  for select to authenticated
+  using (org_id = public.user_org_id());
+
+create policy "profiles_update_self" on public.profiles
+  for update to authenticated
+  using (id = (select auth.uid()))
+  with check (id = (select auth.uid()) and org_id = public.user_org_id());
+
+-- Politique générique org pour toutes les tables métier
+do $$
+declare t text;
+begin
+  foreach t in array array[
+    'chantiers','taches','factures','equipe','heures','commandes','devis',
+    'incidents','avenants','situations','rapports','messages','clients',
+    'fournisseurs','conges','agenda','punch','notes','planning_eq'
+  ] loop
+    execute format('drop policy if exists "org_all" on public.%I', t);
+    execute format(
+      $p$
+      create policy "org_all" on public.%I
+        for all to authenticated
+        using (org_id = public.user_org_id())
+        with check (org_id = public.user_org_id())
+      $p$,
       t
     );
-    EXECUTE format(
-      'CREATE POLICY "allow_anon_insert" ON %I FOR INSERT TO anon, authenticated WITH CHECK (true)',
-      t
-    );
-    EXECUTE format(
-      'CREATE POLICY "allow_anon_update" ON %I FOR UPDATE TO anon, authenticated USING (true) WITH CHECK (true)',
-      t
-    );
-    EXECUTE format(
-      'CREATE POLICY "allow_anon_delete" ON %I FOR DELETE TO anon, authenticated USING (true)',
-      t
-    );
-  END LOOP;
-END $$;
+  end loop;
+end $$;
 
--- ─────────────────────────────────────────────
--- DONNÉES DE DÉMO (optionnel)
--- ─────────────────────────────────────────────
+-- ─── Accès API (Data API) ─────────────────────────────────────────────────
 
--- Réinitialiser les données de démo (décommenter si besoin)
--- TRUNCATE chantiers, taches, factures, messages, avenants, heures, punchlist, rapports, equipe RESTART IDENTITY CASCADE;
+grant usage on schema public to anon, authenticated;
+grant all on all tables in schema public to authenticated;
+grant all on all sequences in schema public to authenticated;
 
-INSERT INTO chantiers (id, nom, client, tel, corps, statut, avancement, budget, depenses, debut, fin, equipe, priorite, note, adresse, meteo)
-VALUES
-  (1, 'Rénovation Villa Dupont', 'M. Dupont', '06 11 22 33 44', 'Maçonnerie + Plomberie', 'en_cours', 68, 85000, 62400, '2026-03-10', '2026-06-30', '["Jean","Marc","Ali"]', 'haute', 'Attention délai façade', '12 rue des Roses, Paris 16e', '☀️'),
-  (2, 'Extension Pavillon Martin', 'Mme Martin', '06 22 33 44 55', 'Gros Œuvre', 'en_cours', 34, 120000, 41800, '2026-04-01', '2026-09-15', '["Karim","Sébastien"]', 'normale', '', '8 allée des Pins, Versailles', '🌤️'),
-  (3, 'Réfection toiture Leroy', 'M. Leroy', '06 33 44 55 66', 'Couverture', 'termine', 100, 22000, 21340, '2026-01-15', '2026-03-01', '["Pierre","Nicolas"]', 'basse', 'PV signé ✓', '5 rue du Moulin, Lyon 3e', '✅'),
-  (4, 'Aménagement cuisine Brun', 'Famille Brun', '06 44 55 66 77', 'Électricité + Plomberie', 'en_attente', 0, 18500, 0, '2026-06-01', '2026-07-15', '[]', 'normale', '', '3 rue Nationale, Bordeaux', '📋'),
-  (5, 'Ravalement façade Moreau', 'Synd. Copropriété', '06 55 66 77 88', 'Façade + Peinture', 'en_cours', 52, 56000, 30200, '2026-02-20', '2026-05-31', '["Thomas","Kevin"]', 'haute', 'Réunion copro 25/05', '22 bd Haussmann, Paris 9e', '🌤️')
-ON CONFLICT (id) DO NOTHING;
+-- ─── Annuaire fournisseurs par défaut (à la création d'une org) ───────────
 
-SELECT setval('chantiers_id_seq', (SELECT COALESCE(MAX(id), 1) FROM chantiers));
+create or replace function public.seed_fournisseurs_for_org(p_org_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if exists (select 1 from public.fournisseurs where org_id = p_org_id limit 1) then
+    return;
+  end if;
+  insert into public.fournisseurs (org_id, nom, tel, cat, url) values
+    (p_org_id, 'Point P', '3616', 'materiaux', 'https://www.pointp.fr'),
+    (p_org_id, 'Cedeo', '3633', 'plomberie', 'https://www.cedeo.fr'),
+    (p_org_id, 'Weber', '01 41 85 25 25', 'enduits', 'https://www.weber.fr'),
+    (p_org_id, 'BigMat', '0811 888 111', 'materiaux', 'https://www.bigmat.fr'),
+    (p_org_id, 'Rexel', '0800 600 700', 'electricite', 'https://www.rexel.fr'),
+    (p_org_id, 'Kiloutou', '3645', 'location', 'https://www.kiloutou.fr');
+end;
+$$;
 
-INSERT INTO taches (id, chantier_id, titre, responsable, debut, fin, statut, duree, priorite) VALUES
-  (1, 1, 'Coulage dalle béton', 'Ali', '2026-05-01', '2026-05-08', 'fait', 7, 'haute'),
-  (2, 1, 'Installation plomberie sdb', 'Marc', '2026-05-09', '2026-05-18', 'en_cours', 9, 'haute'),
-  (3, 1, 'Carrelage sol RDC', 'Ali', '2026-05-15', '2026-05-25', 'a_faire', 10, 'normale'),
-  (4, 1, 'Peinture intérieure', 'Marc', '2026-05-20', '2026-06-05', 'a_faire', 16, 'basse'),
-  (5, 2, 'Fondations extension', 'Karim', '2026-04-10', '2026-04-20', 'fait', 10, 'haute'),
-  (6, 2, 'Élévation murs', 'Sébastien', '2026-04-21', '2026-05-10', 'en_cours', 19, 'haute'),
-  (7, 5, 'Préparation supports', 'Thomas', '2026-02-20', '2026-03-05', 'fait', 13, 'normale'),
-  (8, 5, 'Peinture finition', 'Kevin', '2026-05-01', '2026-05-31', 'en_cours', 30, 'normale')
-ON CONFLICT (id) DO NOTHING;
+create or replace function public.handle_new_user()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  new_org_id uuid;
+  user_nom text;
+  user_role text;
+begin
+  user_nom := coalesce(new.raw_user_meta_data ->> 'nom', split_part(new.email, '@', 1));
+  user_role := coalesce(new.raw_user_meta_data ->> 'role', 'admin');
 
-INSERT INTO factures (id, chantier_id, chantier, client, montant, statut, date, echeance) VALUES
-  ('FAC-001', 1, 'Villa Dupont', 'M. Dupont', 28500, 'payee', '2026-03-15', '2026-04-15'),
-  ('FAC-002', 2, 'Extension Martin', 'Mme Martin', 40000, 'payee', '2026-04-01', '2026-05-01'),
-  ('FAC-003', 5, 'Ravalement Moreau', 'Synd. Copropriété', 18000, 'en_attente', '2026-04-20', '2026-05-20'),
-  ('FAC-004', 1, 'Villa Dupont', 'M. Dupont', 22000, 'en_retard', '2026-04-10', '2026-05-10'),
-  ('FAC-005', 3, 'Toiture Leroy', 'M. Leroy', 21340, 'payee', '2026-03-05', '2026-04-05')
-ON CONFLICT (id) DO NOTHING;
+  insert into public.organizations (name, plan_id)
+  values (coalesce(new.raw_user_meta_data ->> 'org_name', user_nom || ' — BuildEasy'), 'starter')
+  returning id into new_org_id;
 
-INSERT INTO equipe (id, nom, role, tel, heures, chantiers, dispo) VALUES
-  (1, 'Jean Dupont', 'Chef de chantier', '06 12 34 56 78', 142, '[1,2]', true),
-  (2, 'Marc Lefebvre', 'Chef de chantier', '06 23 45 67 89', 98, '[1,5]', true),
-  (3, 'Ali Benali', 'Maçon', '06 34 56 78 90', 126, '[1]', false),
-  (4, 'Karim Diallo', 'Gros Œuvre', '06 45 67 89 01', 110, '[2]', true),
-  (5, 'Thomas Bernard', 'Façadier', '06 67 89 01 23', 136, '[5]', true),
-  (6, 'Kevin Simon', 'Peintre', '06 89 01 23 45', 92, '[5]', true)
-ON CONFLICT (id) DO NOTHING;
+  insert into public.profiles (id, org_id, nom, role, email, ch_ids, vierge)
+  values (
+    new.id,
+    new_org_id,
+    user_nom,
+    user_role,
+    new.email,
+    '{}',
+    coalesce((new.raw_user_meta_data ->> 'vierge')::boolean, true)
+  );
 
-INSERT INTO rapports (id, chantier_id, date, auteur, meteo, temperature, avancement, problemes, presences, photos) VALUES
-  (1, 1, '2026-05-16', 'Marc Lefebvre', '☀️', '22°C', 'Coulage dalle terminé. Plomberie en cours section nord.', 'RAS', '["Marc","Ali"]', 3),
-  (2, 5, '2026-05-16', 'Thomas Bernard', '🌤️', '18°C', 'Peinture finition 60% zone nord.', 'Manque 2 bidons blanc cassé', '["Thomas","Kevin"]', 5)
-ON CONFLICT (id) DO NOTHING;
-
-INSERT INTO messages (id, chantier_id, auteur, role, texte, heure, date) VALUES
-  (1, 1, 'Marc Lefebvre', 'chef', 'Dalle coulée ce matin, RAS. On attaque la plomberie demain.', '08:32', '2026-05-16'),
-  (2, 1, 'Ali Benali', 'employe', 'OK chef. J''ai pris les photos.', '08:45', '2026-05-16'),
-  (3, 1, 'Jean Dupont', 'admin', 'Parfait. M. Dupont a demandé une visite vendredi matin.', '09:10', '2026-05-16'),
-  (4, 5, 'Thomas Bernard', 'chef', 'Il manque 2 bidons de blanc cassé. Quelqu''un peut passer chez Point P ?', '14:20', '2026-05-16'),
-  (5, 5, 'Jean Dupont', 'admin', 'Je commande en ligne, livraison demain matin.', '14:35', '2026-05-16')
-ON CONFLICT (id) DO NOTHING;
-
-INSERT INTO avenants (id, chantier_id, titre, description, montant, statut, date_creation, date_validation, valide_par) VALUES
-  (1, 1, 'Ajout douche à l''italienne', 'Remplacement baignoire par douche à l''italienne.', 2800, 'accepte', '2026-04-20', '2026-04-22', 'M. Dupont'),
-  (2, 1, 'Peinture couloir en plus', 'Peinture couloir d''entrée non prévu initialement.', 650, 'en_attente', '2026-05-10', NULL, '')
-ON CONFLICT (id) DO NOTHING;
-
-INSERT INTO punchlist (id, chantier_id, titre, description, categorie, priorite, statut, signale_par, date_signalement, date_resolution, assigne_a, photos) VALUES
-  (1, 1, 'Fissure angle mur cuisine', 'Fissure verticale 15cm angle mur/plafond.', 'Maçonnerie', 'haute', 'en_cours', 'Marc Lefebvre', '2026-05-10', NULL, 'Ali Benali', 1),
-  (2, 1, 'Carrelage décollé salle de bain', '3 carreaux décollés dans la douche.', 'Carrelage', 'haute', 'ouvert', 'M. Dupont', '2026-05-14', NULL, 'Ali Benali', 2),
-  (3, 1, 'Joint silicone baignoire', 'Joint non conforme, discontinuités.', 'Plomberie', 'normale', 'resolu', 'Marc Lefebvre', '2026-05-08', '2026-05-12', 'Marc Lefebvre', 0)
-ON CONFLICT (id) DO NOTHING;
-
-INSERT INTO heures (id, membre_id, membre_nom, chantier_id, date, arrivee, depart, pause_min, description, valide, validee_par) VALUES
-  (1, 3, 'Ali Benali', 1, '2026-05-19', '07:30', '17:00', 45, 'Préparation coffrage dalle RDC', true, 'Marc Lefebvre'),
-  (2, 2, 'Marc Lefebvre', 1, '2026-05-19', '07:00', '17:30', 60, 'Supervision coffrage + réunion client', true, 'Jean Dupont'),
-  (3, 5, 'Thomas Bernard', 5, '2026-05-19', '08:00', '16:00', 45, 'Peinture façade zone nord — 1ère couche', true, 'Marc Lefebvre'),
-  (4, 6, 'Kevin Simon', 5, '2026-05-19', '08:30', '16:30', 45, 'Préparation enduit façade est', true, 'Marc Lefebvre'),
-  (5, 3, 'Ali Benali', 1, '2026-05-20', '07:30', '17:00', 45, 'Coulage dalle béton RDC', true, 'Marc Lefebvre'),
-  (6, 2, 'Marc Lefebvre', 1, '2026-05-20', '07:00', '18:00', 60, 'Contrôle coulage + coordination plomberie', true, 'Jean Dupont'),
-  (7, 5, 'Thomas Bernard', 5, '2026-05-20', '08:00', '16:00', 45, 'Peinture façade zone nord — 2ème couche', true, 'Marc Lefebvre'),
-  (8, 4, 'Karim Diallo', 2, '2026-05-20', '07:00', '16:00', 45, 'Élévation murs parpaings R+1', true, 'Jean Dupont'),
-  (9, 3, 'Ali Benali', 1, '2026-05-21', '07:30', '12:00', 0, 'Décoffrage dalle — demi-journée', true, 'Marc Lefebvre'),
-  (10, 2, 'Marc Lefebvre', 1, '2026-05-21', '07:00', '17:00', 60, 'Installation plomberie SDB — secteur nord', true, 'Jean Dupont'),
-  (11, 4, 'Karim Diallo', 2, '2026-05-21', '07:00', '16:00', 45, 'Élévation murs + chaînage horizontal', true, 'Jean Dupont'),
-  (12, 6, 'Kevin Simon', 5, '2026-05-21', '08:00', '16:30', 45, 'Peinture façade est — finition', false, ''),
-  (13, 3, 'Ali Benali', 1, '2026-05-22', '07:30', '17:00', 45, 'Pose carrelage sol RDC — début', false, ''),
-  (14, 2, 'Marc Lefebvre', 1, '2026-05-22', '07:00', '17:00', 60, 'Plomberie SDB — raccordements', false, ''),
-  (15, 5, 'Thomas Bernard', 5, '2026-05-22', '08:00', '17:00', 45, 'Ravalement façade sud — début', false, ''),
-  (16, 4, 'Karim Diallo', 2, '2026-05-22', '07:00', '15:30', 45, 'Pose linteaux fenêtres R+1', false, ''),
-  (17, 3, 'Ali Benali', 1, '2026-05-23', '07:30', '16:00', 45, 'Carrelage RDC — avancement 60%', false, ''),
-  (18, 2, 'Marc Lefebvre', 1, '2026-05-23', '07:00', '16:30', 60, 'Plomberie SDB terminée + rapport hebdo', false, ''),
-  (19, 5, 'Thomas Bernard', 5, '2026-05-23', '08:00', '16:00', 45, 'Ravalement façade sud — finition', false, ''),
-  (20, 6, 'Kevin Simon', 5, '2026-05-23', '08:30', '15:00', 30, 'Retouches peinture + nettoyage chantier', false, ''),
-  (21, 3, 'Ali Benali', 1, '2026-05-24', '07:30', '12:00', 0, 'Rattrapage carrelage — finition RDC', false, ''),
-  (22, 2, 'Marc Lefebvre', 1, '2026-05-24', '07:00', '12:30', 0, 'Visite client + PV avancement', false, '')
-ON CONFLICT (id) DO NOTHING;
-
-SELECT setval('taches_id_seq', (SELECT COALESCE(MAX(id), 1) FROM taches));
-SELECT setval('messages_id_seq', (SELECT COALESCE(MAX(id), 1) FROM messages));
-SELECT setval('avenants_id_seq', (SELECT COALESCE(MAX(id), 1) FROM avenants));
-SELECT setval('heures_id_seq', (SELECT COALESCE(MAX(id), 1) FROM heures));
-SELECT setval('punchlist_id_seq', (SELECT COALESCE(MAX(id), 1) FROM punchlist));
-SELECT setval('rapports_id_seq', (SELECT COALESCE(MAX(id), 1) FROM rapports));
-SELECT setval('equipe_id_seq', (SELECT COALESCE(MAX(id), 1) FROM equipe));
+  perform public.seed_fournisseurs_for_org(new_org_id);
+  return new;
+end;
+$$;
