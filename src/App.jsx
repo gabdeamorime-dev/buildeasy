@@ -7,7 +7,7 @@ import { loadAppState, saveAppState, clearAppState, loadLastChId, saveLastChId }
 import { chIdsOf, filterByChAccess, visibleChantiers, isAdmin } from "./lib/access.js";
 import * as cloud from "./lib/cloudSync.js";
 
-const DEMO_AUTH = import.meta.env.DEV || import.meta.env.VITE_DEMO_MODE === "true";
+const DEMO_AUTH = import.meta.env.VITE_DEMO_MODE !== "false";
 
 /*
   BuildEasy v10 — Terrain BTP Premium
@@ -1377,8 +1377,8 @@ function FFacture({ chantiers, devis, onClose, onSave }) {
   );
 }
 
-function LoginScreen({ onLogin }) {
-  const [mode,setMode]=useState("login");
+function LoginScreen({ onLogin, initialMode = "login", onBackToLanding }) {
+  const [mode,setMode]=useState(initialMode === "signup" ? "signup" : "login");
   const [email,setEmail]=useState("");
   const [mdp,setMdp]=useState("");
   const [mdp2,setMdp2]=useState("");
@@ -1388,6 +1388,10 @@ function LoginScreen({ onLogin }) {
   const [info,setInfo]=useState("");
   const [load,setLoad]=useState(false);
   const [showMdp,setShowMdp]=useState(false);
+
+  useEffect(() => {
+    setMode(initialMode === "signup" ? "signup" : "login");
+  }, [initialMode]);
 
   const login = async () => {
     setErr(""); setInfo(""); setLoad(true);
@@ -1457,6 +1461,11 @@ function LoginScreen({ onLogin }) {
     <div style={{minHeight:"100vh",overflowY:"auto",background:"var(--bg)",display:"flex",flexDirection:"column"}}>
       {/* Header */}
       <div style={{padding:"40px 24px 32px",textAlign:"center",background:"var(--w)",borderBottom:"1px solid var(--g2)"}}>
+        {onBackToLanding&&(
+          <button type="button" onClick={onBackToLanding} style={{display:"inline-flex",alignItems:"center",gap:6,marginBottom:16,padding:"6px 12px",borderRadius:99,border:"1px solid var(--g2)",background:"var(--bg)",color:"var(--t3)",fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:"var(--f)"}}>
+            ← Retour au site
+          </button>
+        )}
         <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:10,marginBottom:14}}>
           <div style={{width:40,height:40,background:"var(--blue)",borderRadius:12,display:"flex",alignItems:"center",justifyContent:"center",boxShadow:"0 4px 14px rgba(37,99,235,.3)"}}>
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5" strokeLinecap="round"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
@@ -4593,7 +4602,7 @@ const IcoTask=()=><Ico c={<><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01
 const IcoChat=()=><Ico c={<path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/>}/>;
 const IcoMore=()=><Ico c={<><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></>}/>;
 
-export default function App() {
+export default function App({ initialAuthMode = "login", onBackToLanding }) {
   const [user,setUser]=useState(null);
   const [themeId,setThemeId]=useState(()=>localStorage.getItem("be_theme")||"ocean");
 
@@ -4617,12 +4626,13 @@ export default function App() {
   const handleLogout=async()=>{
     if (user?.isSupabase) await authSignOut().catch(() => {});
     setUser(null);
+    onBackToLanding?.();
   };
 
   return (
     <>
       <style>{CSS}</style>
-      {!user?<LoginScreen onLogin={setUser}/>:<AppMobile key={user.id} user={user} onLogout={handleLogout} themeId={themeId} setThemeId={setThemeId}/>}
+      {!user?<LoginScreen onLogin={setUser} initialMode={initialAuthMode} onBackToLanding={onBackToLanding}/>:<AppMobile key={user.id} user={user} onLogout={handleLogout} themeId={themeId} setThemeId={setThemeId}/>}
     </>
   );
 }
