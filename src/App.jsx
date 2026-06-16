@@ -1,17 +1,13 @@
-import { createClient } from '@supabase/supabase-js'
-const sb = createClient('https://nvgemgfeaxqocrmzdmzy.supabase.co', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im52Z2VtZ2ZlYXhxb2NybXpkbXp5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkyODgwMTMsImV4cCI6MjA5NDg2NDAxM30._9tUcu-EmAiTWCNPQlDPAowLuhhGiKRtWKPFBk0wjfU')
-const UID = () => {
-  const session = sb.auth.getSession();
-  return session?.data?.session?.user?.id ||
-    localStorage.getItem('be_uid') ||
-    (() => {
-      const id = Math.random().toString(36).slice(2);
-      localStorage.setItem('be_uid', id);
-      return id;
-    })()
-}
-import { useState, useRef, useEffect } from "react";
-import { useBuildEasyData } from "./hooks/useBuildEasyData.js";
+import { useState, useRef, useEffect, useMemo, useCallback } from "react";
+import { isSupabaseConfigured, supabase } from "./supabase.js";
+import { signInWithEmail, signUpWithEmail, resetPassword, signOut as authSignOut, onAuthChange, getSessionUser } from "./lib/auth.js";
+import { loadAppDataForUi } from "./lib/appDataBridge.js";
+import { isStripeConfigured, stripeCheckoutUrl, stripePortalUrl } from "./lib/stripe.js";
+import { loadAppState, saveAppState, clearAppState, loadLastChId, saveLastChId } from "./lib/persistence.js";
+import { chIdsOf, filterByChAccess, visibleChantiers, isAdmin } from "./lib/access.js";
+import * as cloud from "./lib/cloudSync.js";
+
+const DEMO_AUTH = import.meta.env.DEV || import.meta.env.VITE_DEMO_MODE === "true";
 
 /*
   BuildEasy v10 — Terrain BTP Premium
@@ -268,6 +264,28 @@ const D_SIT = [
 const EUR  = n => new Intl.NumberFormat("fr-FR",{style:"currency",currency:"EUR",maximumFractionDigits:0}).format(n||0);
 const PCT  = (a,b) => b>0?Math.round(a/b*100):0;
 const INI  = n => (n||"?").split(" ").map(w=>w[0]).join("").toUpperCase().slice(0,2);
+const parseFrDate = s => {
+  if (!s) return null;
+  const p = String(s).split("/");
+  if (p.length !== 3) return null;
+  const d = parseInt(p[0], 10);
+  const m = parseInt(p[1], 10);
+  let y = parseInt(p[2], 10);
+  if (y < 100) y += 2000;
+  const dt = new Date(y, m - 1, d);
+  return Number.isNaN(dt.getTime()) ? null : dt.getTime();
+};
+const syncEquipeChantier = (setEquipe, chId, eqIds) => {
+  if (!eqIds) return;
+  setEquipe(p => p.map(m => {
+    const ids = [...(m.chIds || [])];
+    const want = eqIds.includes(m.id);
+    const has = ids.includes(chId);
+    if (want && !has) return { ...m, chIds: [...ids, chId] };
+    if (!want && has) return { ...m, chIds: ids.filter(id => id !== chId) };
+    return m;
+  }));
+};
 const calcH = h => {
   if(!h.arr||!h.dep) return 0;
   const [ah,am]=h.arr.split(":").map(Number);
@@ -297,11 +315,17 @@ const calcMargeChantier = (c, heures, equipe, commandes) => {
   return { totalH, coutMO, coutMat, coutTotal, margeReelle, margeP };
 };
 const isRetard = fin => {
-  if(!fin) return false;
-  const parts=fin.split("/");
-  if(parts.length<2) return false;
-  const d=new Date(2026,parseInt(parts[parts.length===3?1:1])-1,parseInt(parts[0]));
-  return d<new Date()&&!isNaN(d.getTime());
+  if (!fin) return false;
+  const p = String(fin).split("/");
+  if (p.length < 2) return false;
+  const d = parseInt(p[0], 10);
+  const m = parseInt(p[1], 10) - 1;
+  let y = p.length >= 3 ? parseInt(p[2], 10) : new Date().getFullYear();
+  if (y < 100) y += 2000;
+  const dt = new Date(y, m, d);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return !Number.isNaN(dt.getTime()) && dt < today;
 };
 const calcHS = (h,base=35) => {
   const t=calcH(h);
@@ -309,21 +333,78 @@ const calcHS = (h,base=35) => {
   const sup=t-base/5;
   return {normal:base/5,sup25:Math.min(sup,2),sup50:Math.max(0,sup-2)};
 };
+const APP_THEMES = [
+  { id:"ocean",   name:"Océan",    emoji:"🌊", desc:"Bleu pro — défaut",        swatch:["#F0F4F8","#2563EB"] },
+  { id:"forest",  name:"Forêt",    emoji:"🌲", desc:"Vert chantier & nature",   swatch:["#F0F7F4","#059669"] },
+  { id:"sunset",  name:"Sunset",   emoji:"🌅", desc:"Chaud & énergique",        swatch:["#FFF8F0","#EA580C"] },
+  { id:"terra",   name:"Terra",    emoji:"🧱", desc:"Terre & BTP",              swatch:["#FAF6F1","#C2410C"] },
+  { id:"slate",   name:"Slate",    emoji:"◻",  desc:"Minimal & sobre",          swatch:["#FAFAFA","#18181B"] },
+  { id:"midnight",name:"Midnight", emoji:"🌙", desc:"Mode sombre",              swatch:["#0B1120","#6366F1"] },
+];
 const CSS = `
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
-:root{
+:root,[data-theme="ocean"]{
   --bg:#F0F4F8;--w:#FFF;--g1:#F8FAFC;--g2:#E2E8F0;--g3:#CBD5E1;--g4:#94A3B8;
   --t1:#0F172A;--t2:#1E293B;--t3:#475569;--t4:#94A3B8;
   --blue:#2563EB;--blue-l:#EFF6FF;--blue-b:#BFDBFE;
   --ok:#059669;--ok-l:#ECFDF5;--ok-b:#A7F3D0;
   --warn:#D97706;--warn-l:#FFFBEB;--warn-b:#FDE68A;
   --err:#DC2626;--err-l:#FEF2F2;--err-b:#FECACA;
+  --overlay:rgba(15,23,42,.52);--hdr-ico:#2563EB;
+}
+[data-theme="forest"]{
+  --bg:#F0F7F4;--w:#FFF;--g1:#F4FAF7;--g2:#D1E7DD;--g3:#A3CFBB;--g4:#6B9E82;
+  --t1:#1A2E1F;--t2:#2D4A35;--t3:#4A6B54;--t4:#8FA898;
+  --blue:#059669;--blue-l:#ECFDF5;--blue-b:#A7F3D0;
+  --ok:#0891B2;--ok-l:#ECFEFF;--ok-b:#A5F3FC;
+  --warn:#CA8A04;--warn-l:#FEFCE8;--warn-b:#FEF08A;
+  --err:#DC2626;--err-l:#FEF2F2;--err-b:#FECACA;
+  --overlay:rgba(26,46,31,.45);--hdr-ico:#059669;
+}
+[data-theme="sunset"]{
+  --bg:#FFF8F0;--w:#FFF;--g1:#FFF7ED;--g2:#FED7AA;--g3:#FDBA74;--g4:#FB923C;
+  --t1:#431407;--t2:#7C2D12;--t3:#9A3412;--t4:#C2410C;
+  --blue:#EA580C;--blue-l:#FFF7ED;--blue-b:#FED7AA;
+  --ok:#059669;--ok-l:#ECFDF5;--ok-b:#A7F3D0;
+  --warn:#D97706;--warn-l:#FFFBEB;--warn-b:#FDE68A;
+  --err:#DC2626;--err-l:#FEF2F2;--err-b:#FECACA;
+  --overlay:rgba(67,20,7,.4);--hdr-ico:#EA580C;
+}
+[data-theme="terra"]{
+  --bg:#FAF6F1;--w:#FFF;--g1:#F5EDE4;--g2:#E8D5C4;--g3:#D4B896;--g4:#A89078;
+  --t1:#292018;--t2:#443528;--t3:#6B5344;--t4:#9C8575;
+  --blue:#C2410C;--blue-l:#FFF7ED;--blue-b:#FDBA74;
+  --ok:#15803D;--ok-l:#F0FDF4;--ok-b:#BBF7D0;
+  --warn:#B45309;--warn-l:#FFFBEB;--warn-b:#FDE68A;
+  --err:#B91C1C;--err-l:#FEF2F2;--err-b:#FECACA;
+  --overlay:rgba(41,32,24,.5);--hdr-ico:#C2410C;
+}
+[data-theme="slate"]{
+  --bg:#FAFAFA;--w:#FFF;--g1:#F4F4F5;--g2:#E4E4E7;--g3:#D4D4D8;--g4:#A1A1AA;
+  --t1:#09090B;--t2:#18181B;--t3:#52525B;--t4:#A1A1AA;
+  --blue:#18181B;--blue-l:#F4F4F5;--blue-b:#D4D4D8;
+  --ok:#059669;--ok-l:#ECFDF5;--ok-b:#A7F3D0;
+  --warn:#D97706;--warn-l:#FFFBEB;--warn-b:#FDE68A;
+  --err:#DC2626;--err-l:#FEF2F2;--err-b:#FECACA;
+  --overlay:rgba(9,9,11,.45);--hdr-ico:#18181B;
+}
+[data-theme="midnight"]{
+  --bg:#0B1120;--w:#151D2E;--g1:#1A2438;--g2:#243049;--g3:#374866;--g4:#64748B;
+  --t1:#F1F5F9;--t2:#CBD5E1;--t3:#94A3B8;--t4:#64748B;
+  --blue:#6366F1;--blue-l:#1E1B4B;--blue-b:#4338CA;
+  --ok:#34D399;--ok-l:#064E3B;--ok-b:#059669;
+  --warn:#FBBF24;--warn-l:#451A03;--warn-b:#D97706;
+  --err:#F87171;--err-l:#450A0A;--err-b:#DC2626;
+  --overlay:rgba(0,0,0,.65);--hdr-ico:#6366F1;
+}
+:root{
   --r:8px;--r2:12px;--sh:0 1px 3px rgba(0,0,0,.07);
   --f:'Inter',-apple-system,sans-serif;
   --sb:env(safe-area-inset-bottom,0px);--st:env(safe-area-inset-top,0px);
 }
-html,body,#root{height:100%;font-family:var(--f);background:var(--bg);color:var(--t1);overflow:hidden;-webkit-tap-highlight-color:transparent;-webkit-font-smoothing:antialiased;}
+html,body,#root{height:100%;font-family:var(--f);background:var(--bg);color:var(--t1);overflow:hidden;-webkit-tap-highlight-color:transparent;-webkit-font-smoothing:antialiased;transition:background-color .25s ease,color .25s ease;}
+.card,.nav,.btn,.inp,.sh,.fab-r,.fab-b{transition:background-color .2s ease,border-color .2s ease,color .2s ease,box-shadow .2s ease;}
 ::-webkit-scrollbar{display:none;}
 @keyframes up{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
 @keyframes su{from{transform:translateY(100%)}to{transform:none}}
@@ -341,7 +422,7 @@ html,body,#root{height:100%;font-family:var(--f);background:var(--bg);color:var(
 .btn-fw{width:100%;}.btn-sq{width:48px;padding:0;}
 .inp{width:100%;height:48px;padding:0 14px;background:var(--w);border:1.5px solid var(--g2);border-radius:var(--r2);color:var(--t1);font-family:var(--f);font-size:15px;outline:none;transition:border-color .15s;box-shadow:var(--sh);}
 .inp:focus{border-color:var(--blue);}.inp::placeholder{color:var(--t4);}
-select.inp{cursor:pointer;}select.inp option{background:#fff;color:var(--t1);}
+select.inp{cursor:pointer;}select.inp option{background:var(--w);color:var(--t1);}
 .inp-a{height:auto;padding:12px 14px;resize:none;min-height:80px;line-height:1.6;}
 .lbl{font-size:11px;font-weight:700;color:var(--t3);letter-spacing:.08em;text-transform:uppercase;margin-bottom:6px;display:block;}
 .card{background:var(--w);border-radius:var(--r2);box-shadow:var(--sh);border:1px solid var(--g2);}
@@ -356,7 +437,7 @@ select.inp{cursor:pointer;}select.inp option{background:#fff;color:var(--t1);}
 .bar{height:6px;background:var(--g2);border-radius:99px;overflow:hidden;}
 .bar4{height:4px;background:var(--g2);border-radius:99px;overflow:hidden;}
 .bar-fill{height:100%;border-radius:99px;transition:width 1s cubic-bezier(.4,0,.2,1);}
-.sbg{position:fixed;inset:0;background:rgba(15,23,42,.52);backdrop-filter:blur(4px);z-index:500;display:flex;align-items:flex-end;animation:fi .15s ease both;}
+.sbg{position:fixed;inset:0;background:var(--overlay);backdrop-filter:blur(4px);z-index:500;display:flex;align-items:flex-end;animation:fi .15s ease both;}
 .sh{background:var(--w);border-radius:20px 20px 0 0;border-top:1px solid var(--g2);width:100%;max-height:93vh;overflow-y:auto;padding:0 20px calc(28px + var(--sb));animation:su .25s cubic-bezier(.32,0,.1,1) both;box-shadow:0 -8px 32px rgba(0,0,0,.1);}
 .drag{width:40px;height:4px;background:var(--g3);border-radius:99px;margin:14px auto 22px;}
 .nav{position:fixed;bottom:0;left:0;right:0;background:var(--w);border-top:1.5px solid var(--g2);display:flex;padding:6px 0 calc(6px + var(--sb));z-index:100;box-shadow:0 -2px 12px rgba(0,0,0,.05);}
@@ -377,7 +458,13 @@ select.inp{cursor:pointer;}select.inp option{background:#fff;color:var(--t1);}
 .div{height:1px;background:var(--g2);}
 .sx{display:flex;overflow-x:auto;gap:8px;padding-bottom:2px;}
 .av{border-radius:var(--r);display:flex;align-items:center;justify-content:center;font-weight:700;flex-shrink:0;}
-.print-overlay{position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:600;display:flex;align-items:flex-start;justify-content:center;padding:20px;overflow-y:auto;}
+.theme-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
+.theme-card{padding:12px;border-radius:var(--r2);border:2px solid var(--g2);background:var(--w);cursor:pointer;text-align:left;transition:all .15s;font-family:var(--f);}
+.theme-card:active{transform:scale(.98);}
+.theme-card.on{border-color:var(--blue);background:var(--blue-l);box-shadow:0 0 0 1px var(--blue-b);}
+.theme-swatch{display:flex;gap:4px;margin-bottom:8px;}
+.theme-swatch span{flex:1;height:22px;border-radius:6px;border:1px solid rgba(0,0,0,.06);}
+.print-overlay{position:fixed;inset:0;background:var(--overlay);z-index:600;display:flex;align-items:flex-start;justify-content:center;padding:20px;overflow-y:auto;}
 .print-sheet{background:#fff;border-radius:14px;max-width:680px;width:100%;margin:auto;box-shadow:0 20px 60px rgba(0,0,0,.25);overflow:hidden;}
 .print-doc{color:#111;font-size:14px;line-height:1.5;}
 @media print{
@@ -413,6 +500,23 @@ function Alert({ msg, type="warn", children }) {
   const cfg={warn:{bg:"var(--warn-l)",bd:"var(--warn-b)",t:"var(--warn)"},err:{bg:"var(--err-l)",bd:"var(--err-b)",t:"var(--err)"},ok:{bg:"var(--ok-l)",bd:"var(--ok-b)",t:"var(--ok)"},blue:{bg:"var(--blue-l)",bd:"var(--blue-b)",t:"var(--blue)"}}[type]||{bg:"var(--warn-l)",bd:"var(--warn-b)",t:"var(--warn)"};
   return <div style={{padding:"12px 14px",background:cfg.bg,border:"1px solid "+cfg.bd,borderRadius:"var(--r2)"}}><div style={{fontSize:12,fontWeight:700,color:cfg.t,marginBottom:children?8:0}}>{msg}</div>{children}</div>;
 }
+
+function AddrActions({ adresse, onCopy }) {
+  if (!adresse) return null;
+  const copy = () => {
+    navigator.clipboard?.writeText(adresse).then(() => onCopy?.("Adresse copiée")).catch(() => {});
+  };
+  return (
+    <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 6 }}>
+      <a href={"https://maps.google.com/?q=" + encodeURIComponent(adresse)} target="_blank" rel="noopener noreferrer" className="btn btn-out btn-xs">Maps</a>
+      <a href={"https://waze.com/ul?q=" + encodeURIComponent(adresse)} target="_blank" rel="noopener noreferrer" className="btn btn-out btn-xs">Waze</a>
+      <button type="button" className="btn btn-ghost btn-xs" onClick={copy}>Copier</button>
+    </div>
+  );
+}
+
+const METEO_PRESETS = ["☀️ Ensoleillé 22°C", "🌤 Nuageux 18°C", "🌧 Pluie 14°C", "💨 Vent fort 16°C", "❄️ Froid 5°C"];
+
 function Sheet({ title, sub, onClose, footer, children }) {
   return (
     <div className="sbg" onMouseDown={e=>e.target===e.currentTarget&&onClose()}>
@@ -541,22 +645,26 @@ function FTache({ chantiers, equipe, onClose, onSave }) {
   );
 }
 
-function FRapport({ chantiers, equipe, user, onClose, onSave }) {
-  const [f,setF]=useState({chId:"",date:new Date().toLocaleDateString("fr-FR"),auteur:user?.nom||"",meteo:"",av:"",incidents:"RAS",presIds:[]});
-  const s=(k,v)=>setF(p=>({...p,[k]:v}));
+function FRapport({ chantiers, equipe, user, defaultChId="", onRememberCh, onClose, onSave }) {
+  const [f,setF]=useState({chId:defaultChId?String(defaultChId):"",date:new Date().toLocaleDateString("fr-FR"),auteur:user?.nom||"",meteo:"",av:"",incidents:"RAS",presIds:[]});
+  const s=(k,v)=>setF(p=>{const n={...p,[k]:v};if(k==="chId"&&v&&onRememberCh)onRememberCh(parseInt(v));return n;});
   const ok=f.chId&&f.av.trim();
   const chEquipe=f.chId?equipe.filter(m=>m.chIds&&m.chIds.includes(parseInt(f.chId))):equipe;
   const togglePres=nom=>setF(p=>({...p,presIds:p.presIds.includes(nom)?p.presIds.filter(x=>x!==nom):[...p.presIds,nom]}));
   return (
     <Sheet title="Compte-rendu journalier" onClose={onClose} footer={<><button className="btn btn-blue btn-fw" disabled={!ok} onClick={()=>{onSave({...f,presences:f.presIds});onClose();}}>Enregistrer</button><button className="btn btn-out btn-fw" onClick={onClose}>Annuler</button></>}>
-      <Fld label="Chantier"><select className="inp" value={f.chId} onChange={e=>s("chId",e.target.value)}><option value="">Sélectionner...</option>{chantiers.filter(c=>c.statut==="actif").map(c=><option key={c.id} value={c.id}>{c.nom}</option>)}</select></Fld>
+      <Fld label="Chantier"><select className="inp" value={f.chId} onChange={e=>s("chId",e.target.value)}><option value="">Sélectionner...</option>{chantiers.filter(c=>c.statut!=="livre").map(c=><option key={c.id} value={c.id}>{c.nom}</option>)}</select></Fld>
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
         <Fld label="Rédacteur"><input className="inp" value={f.auteur} onChange={e=>s("auteur",e.target.value)}/></Fld>
         <Fld label="Météo"><input className="inp" placeholder="Ensoleillé 22°C" value={f.meteo} onChange={e=>s("meteo",e.target.value)}/></Fld>
       </div>
+      <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:12}}>
+        {METEO_PRESETS.map(m=><button key={m} type="button" onClick={()=>s("meteo",m)} style={{padding:"6px 10px",borderRadius:"var(--r)",border:"1px solid "+(f.meteo===m?"var(--blue)":"var(--g2)"),background:f.meteo===m?"var(--blue-l)":"var(--w)",fontSize:11,fontWeight:600,color:f.meteo===m?"var(--blue)":"var(--t3)",cursor:"pointer",fontFamily:"var(--f)"}}>{m}</button>)}
+      </div>
       <Fld label="Avancement des travaux"><textarea className="inp inp-a" placeholder="Travaux réalisés ce jour..." value={f.av} onChange={e=>s("av",e.target.value)}/></Fld>
       <Fld label="Incidents / Observations"><textarea className="inp inp-a" style={{minHeight:60}} placeholder="RAS, ou description..." value={f.incidents} onChange={e=>s("incidents",e.target.value)}/></Fld>
       <Fld label={"Personnel présent ("+f.presIds.length+")"}>
+        {chEquipe.length>0&&<button type="button" className="btn btn-out btn-xs" style={{marginBottom:8}} onClick={()=>setF(p=>({...p,presIds:chEquipe.map(m=>m.nom)}))}>Tout présent</button>}
         <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
           {chEquipe.map(m=>(
             <div key={m.id} onClick={()=>togglePres(m.nom)} style={{display:"flex",alignItems:"center",gap:6,padding:"8px 12px",background:f.presIds.includes(m.nom)?"var(--ok-l)":"var(--w)",border:"1.5px solid "+(f.presIds.includes(m.nom)?"var(--ok)":"var(--g2)"),borderRadius:"var(--r2)",cursor:"pointer"}}>
@@ -579,7 +687,7 @@ function FAvenant({ chantiers, onClose, onSave }) {
   return (
     <Sheet title="Nouvel avenant" sub="Travaux supplémentaires au marché" onClose={onClose} footer={<><button className="btn btn-blue btn-fw" disabled={!ok} onClick={()=>{onSave({chId:parseInt(f.chId),titre:f.titre,desc:f.desc,mt:parseInt(f.mt),ref:"AV-"+String(Date.now()).slice(-3),statut:"attente",dc:new Date().toLocaleDateString("fr-FR"),ds:"",par:""});onClose();}}>Soumettre au MOA</button><button className="btn btn-out btn-fw" onClick={onClose}>Annuler</button></>}>
       <Alert msg="Un avenant doit être signé par le MOA avant tout commencement des travaux supplémentaires." type="warn"/>
-      <Fld label="Chantier"><select className="inp" value={f.chId} onChange={e=>s("chId",e.target.value)}><option value="">Sélectionner...</option>{chantiers.filter(c=>c.statut==="actif").map(c=><option key={c.id} value={c.id}>{c.nom} — {c.client}</option>)}</select></Fld>
+      <Fld label="Chantier"><select className="inp" value={f.chId} onChange={e=>s("chId",e.target.value)}><option value="">Sélectionner...</option>{chantiers.filter(c=>c.statut!=="livre").map(c=><option key={c.id} value={c.id}>{c.nom} — {c.client}</option>)}</select></Fld>
       <Fld label="Objet de l'avenant"><input className="inp" placeholder="Désignation courte des travaux" value={f.titre} onChange={e=>s("titre",e.target.value)}/></Fld>
       <Fld label="Description technique"><textarea className="inp inp-a" placeholder="Nature et étendue des travaux supplémentaires..." value={f.desc} onChange={e=>s("desc",e.target.value)}/></Fld>
       <Fld label="Montant HT (€)"><input className="inp" type="number" min="0" placeholder="0" value={f.mt} onChange={e=>s("mt",e.target.value)}/></Fld>
@@ -588,9 +696,9 @@ function FAvenant({ chantiers, onClose, onSave }) {
   );
 }
 
-function FPunch({ chantiers, equipe, user, onClose, onSave }) {
-  const [f,setF]=useState({chId:"",titre:"",desc:"",corps:"Maçonnerie",prio:1,ass:""});
-  const s=(k,v)=>setF(p=>({...p,[k]:v}));
+function FPunch({ chantiers, equipe, user, defaultChId="", onRememberCh, onClose, onSave }) {
+  const [f,setF]=useState({chId:defaultChId?String(defaultChId):"",titre:"",desc:"",corps:"Maçonnerie",prio:1,ass:""});
+  const s=(k,v)=>setF(p=>{const n={...p,[k]:v};if(k==="chId"&&v&&onRememberCh)onRememberCh(parseInt(v));return n;});
   const ok=f.chId&&f.titre.trim();
   return (
     <Sheet title="Nouvelle réserve" sub="Défaut ou non-conformité à corriger" onClose={onClose} footer={<><button className="btn btn-blue btn-fw" disabled={!ok} onClick={()=>{onSave({...f,chId:parseInt(f.chId),ref:"RES-"+String(Date.now()).slice(-3),statut:"ouvert",sig:user?.nom||"",date:new Date().toLocaleDateString("fr-FR"),clos:"",prio:parseInt(f.prio)});onClose();}}>Enregistrer</button><button className="btn btn-out btn-fw" onClick={onClose}>Annuler</button></>}>
@@ -632,7 +740,7 @@ function FIncident({ chantiers, user, ctx, edit, onClose, onSave, onUpdate }) {
 }
 
 function FDevis({ onClose, onSave }) {
-  const [f,setF]=useState({ref:"DEV-2026-"+String(Date.now()).slice(-3),client:"",objet:"",date:new Date().toISOString().split("T")[0],validite:"",tva:20,remise:0});
+  const [f,setF]=useState(()=>({ref:"DEV-2026-"+String(Date.now()).slice(-3),client:"",objet:"",date:new Date().toISOString().split("T")[0],validite:"",tva:20,remise:0}));
   const [lots,setLots]=useState([{nom:"Lot 1",lignes:[{desc:"",unite:"u",qte:1,pu:0}]}]);
   const s=(k,v)=>setF(p=>({...p,[k]:v}));
   const addLot=()=>setLots(p=>[...p,{nom:"Lot "+(p.length+1),lignes:[{desc:"",unite:"u",qte:1,pu:0}]}]);
@@ -844,12 +952,13 @@ function FAgenda({ chantiers, equipe, onClose, onSave }) {
   );
 }
 
-function FCommande({ chantiers, onClose, onSave }) {
-  const [f,setF]=useState({chId:"",fournisseur:"",fournisseurId:"",objet:"",mt:"",livraison:"",urgent:false});
-  const s=(k,v)=>setF(p=>({...p,[k]:v}));
+function FCommande({ chantiers, fournisseurs, defaultChId="", onRememberCh, onClose, onSave }) {
+  const [f,setF]=useState({chId:defaultChId?String(defaultChId):"",fournisseur:"",fournisseurId:"",objet:"",mt:"",livraison:"",urgent:false});
+  const s=(k,v)=>setF(p=>{const n={...p,[k]:v};if(k==="chId"&&v&&onRememberCh)onRememberCh(parseInt(v));return n;});
   const ok=f.chId&&f.fournisseur.trim()&&f.objet.trim();
-  const selFourn=f.fournisseurId?D_FOURNISSEURS.find(x=>x.id===parseInt(f.fournisseurId)):null;
-  const cats=[...new Set(D_FOURNISSEURS.map(x=>x.cat))];
+  const annuaire=fournisseurs?.length?fournisseurs:D_FOURNISSEURS;
+  const selFourn=f.fournisseurId?annuaire.find(x=>x.id===parseInt(f.fournisseurId)):null;
+  const cats=[...new Set(annuaire.map(x=>x.cat))];
   const catLabel={materiaux:"Matériaux",plomberie:"Plomberie",electricite:"Électricité",location:"Location",enduits:"Enduits",bois:"Bois"};
   return (
     <Sheet title="Nouvelle commande" sub="Matériaux ou fournitures" onClose={onClose}
@@ -861,11 +970,11 @@ function FCommande({ chantiers, onClose, onSave }) {
         </select>
       </Fld>
       <Fld label="Fournisseur">
-        <select className="inp" value={f.fournisseurId} onChange={e=>{const fourn=D_FOURNISSEURS.find(x=>x.id===parseInt(e.target.value));s("fournisseurId",e.target.value);if(fourn)s("fournisseur",fourn.nom);}}>
+        <select className="inp" value={f.fournisseurId} onChange={e=>{const fourn=annuaire.find(x=>x.id===parseInt(e.target.value));s("fournisseurId",e.target.value);if(fourn)s("fournisseur",fourn.nom);}}>
           <option value="">Choisir dans l'annuaire...</option>
           {cats.map(cat=>(
             <optgroup key={cat} label={catLabel[cat]||cat}>
-              {D_FOURNISSEURS.filter(x=>x.cat===cat).map(x=><option key={x.id} value={x.id}>{x.nom} — {x.tel}</option>)}
+              {annuaire.filter(x=>x.cat===cat).map(x=><option key={x.id} value={x.id}>{x.nom} — {x.tel}</option>)}
             </optgroup>
           ))}
         </select>
@@ -887,23 +996,30 @@ function FCommande({ chantiers, onClose, onSave }) {
   );
 }
 
-function FHeures({ chantiers, equipe, user, onClose, onSave }) {
+function FHeures({ chantiers, equipe, user, heures=[], defaultChId="", onRememberCh, onClose, onSave }) {
   const isChef=user.role==="chef"||user.role==="admin";
   const [f,setF]=useState({
     nom: isChef?"":user.nom,
-    chId:"", date:new Date().toISOString().split("T")[0],
+    chId: defaultChId?String(defaultChId):"", date:new Date().toISOString().split("T")[0],
     arr:"07:30", dep:"17:00", pause:45, desc:"",
     panier:true, trajet:false, zone:0,
   });
-  const s=(k,v)=>setF(p=>({...p,[k]:v}));
+  const s=(k,v)=>setF(p=>{const n={...p,[k]:v};if(k==="chId"&&v&&onRememberCh)onRememberCh(parseInt(v));return n;});
   const hT=calcH({arr:f.arr,dep:f.dep,pause:f.pause});
   const hWarn=hT>12;
   const ok=f.nom&&f.chId&&f.arr&&f.dep&&hT>0;
+  const repeatYesterday=()=>{
+    const today=new Date().toISOString().split("T")[0];
+    const last=heures.filter(h=>h.nom===(f.nom||user.nom)&&h.date<today).sort((a,b)=>b.date.localeCompare(a.date))[0];
+    if(!last)return;
+    setF(p=>({...p,chId:String(last.chId),arr:last.arr,dep:last.dep,pause:last.pause??45,desc:last.desc||"",panier:!!last.panier,trajet:!!last.trajet,zone:last.zone||0,date:today}));
+  };
   return (
     <Sheet title="Saisir des heures" onClose={onClose}
       footer={<><button className="btn btn-blue btn-fw" disabled={!ok} onClick={()=>{onSave({...f,chId:parseInt(f.chId),id:Date.now(),val:false});onClose();}}>Enregistrer</button><button className="btn btn-out btn-fw" onClick={onClose}>Annuler</button></>}>
       {isChef&&<Fld label="Collaborateur"><select className="inp" value={f.nom} onChange={e=>s("nom",e.target.value)}><option value="">Sélectionner...</option>{equipe.map(m=><option key={m.id} value={m.nom}>{m.nom} — {m.fn}</option>)}</select></Fld>}
-      <Fld label="Chantier"><select className="inp" value={f.chId} onChange={e=>s("chId",e.target.value)}><option value="">Sélectionner...</option>{chantiers.filter(c=>c.statut==="actif").map(c=><option key={c.id} value={c.id}>{c.nom}</option>)}</select></Fld>
+      <Fld label="Chantier"><select className="inp" value={f.chId} onChange={e=>s("chId",e.target.value)}><option value="">Sélectionner...</option>{chantiers.filter(c=>c.statut!=="livre").map(c=><option key={c.id} value={c.id}>{c.nom}</option>)}</select></Fld>
+      <button type="button" className="btn btn-out btn-sm btn-fw" style={{marginBottom:10}} onClick={repeatYesterday}>↩ Répéter la dernière saisie</button>
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
         <Fld label="Date"><input className="inp" type="date" value={f.date} onChange={e=>s("date",e.target.value)}/></Fld>
         <Fld label="Pause (min)"><input className="inp" type="number" min="0" step="15" value={f.pause} onChange={e=>s("pause",parseInt(e.target.value)||0)}/></Fld>
@@ -935,7 +1051,7 @@ function FSituation({ chantiers, onClose, onSave }) {
   return (
     <Sheet title="Nouvelle situation de travaux" sub="Facturation d'avancement" onClose={onClose}
       footer={<><button className="btn btn-blue btn-fw" disabled={!ok} onClick={()=>{onSave({chId:parseInt(f.chId),ref:"SIT-"+String(Date.now()).slice(-3),num:(chantiers.find(c=>c.id===parseInt(f.chId))?.nom||""),titre:f.titre,av:parseInt(f.av)||0,mt:parseInt(f.mt),statut:"emise",date:f.date,ech:f.ech,desc:f.desc});onClose();}}>Émettre la situation</button><button className="btn btn-out btn-fw" onClick={onClose}>Annuler</button></>}>
-      <Fld label="Chantier"><select className="inp" value={f.chId} onChange={e=>s("chId",e.target.value)}><option value="">Sélectionner...</option>{chantiers.filter(c=>c.statut==="actif").map(c=><option key={c.id} value={c.id}>{c.nom} — {c.client}</option>)}</select></Fld>
+      <Fld label="Chantier"><select className="inp" value={f.chId} onChange={e=>s("chId",e.target.value)}><option value="">Sélectionner...</option>{chantiers.filter(c=>c.statut!=="livre").map(c=><option key={c.id} value={c.id}>{c.nom} — {c.client}</option>)}</select></Fld>
       <Fld label="Intitulé"><input className="inp" placeholder="Situation n°X — Description" value={f.titre} onChange={e=>s("titre",e.target.value)}/></Fld>
       <Fld label="Description des travaux facturés"><textarea className="inp inp-a" style={{minHeight:60}} placeholder="Nature des travaux, localisation..." value={f.desc} onChange={e=>s("desc",e.target.value)}/></Fld>
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
@@ -1262,32 +1378,75 @@ function FFacture({ chantiers, devis, onClose, onSave }) {
 }
 
 function LoginScreen({ onLogin }) {
+  const [mode,setMode]=useState("login");
   const [email,setEmail]=useState("");
   const [mdp,setMdp]=useState("");
+  const [mdp2,setMdp2]=useState("");
+  const [nom,setNom]=useState("");
+  const [entreprise,setEntreprise]=useState("");
   const [err,setErr]=useState("");
+  const [info,setInfo]=useState("");
   const [load,setLoad]=useState(false);
   const [showMdp,setShowMdp]=useState(false);
+
   const login = async () => {
-    setErr(""); setLoad(true);
-    const local = COMPTES.find(c =>
-      c.email === email.trim().toLowerCase() && c.mdp === mdp
-    );
-    if (local) { onLogin(local); return; }
-    const { data, error } = await sb.auth.signInWithPassword({
-      email: email.trim().toLowerCase(),
-      password: mdp
-    });
-    if (error) { setErr("Email ou mot de passe incorrect"); setLoad(false); return; }
-    onLogin({
-      id: data.user.id,
-      nom: data.user.user_metadata?.nom || email.split('@')[0],
-      role: data.user.user_metadata?.role || 'admin',
-      email: data.user.email,
-      chIds: [],
-      vierge: false
-    });
+    setErr(""); setInfo(""); setLoad(true);
+    const emailNorm = email.trim().toLowerCase();
+    if (DEMO_AUTH) {
+      const local = COMPTES.find(c => c.email === emailNorm && c.mdp === mdp);
+      if (local) { onLogin({ ...local, isLocal: true, chIds: local.chIds || [] }); setLoad(false); return; }
+    }
+    if (!isSupabaseConfigured) {
+      setErr("Connexion cloud indisponible. Utilisez un compte démo ou configurez Supabase.");
+      setLoad(false);
+      return;
+    }
+    try {
+      const appUser = await signInWithEmail(email, mdp);
+      onLogin(appUser);
+    } catch {
+      setErr("Email ou mot de passe incorrect");
+    } finally {
+      setLoad(false);
+    }
   };
-  const quick=(c)=>onLogin(c);
+
+  const signup = async () => {
+    setErr(""); setInfo(""); setLoad(true);
+    if (!nom.trim() || !entreprise.trim()) { setErr("Nom et entreprise requis"); setLoad(false); return; }
+    if (mdp.length < 8) { setErr("Mot de passe : 8 caractères minimum"); setLoad(false); return; }
+    if (mdp !== mdp2) { setErr("Les mots de passe ne correspondent pas"); setLoad(false); return; }
+    if (!isSupabaseConfigured) { setErr("Inscription cloud indisponible"); setLoad(false); return; }
+    try {
+      const { user, needsEmailConfirmation } = await signUpWithEmail({ email, password: mdp, nom, entreprise });
+      if (needsEmailConfirmation) {
+        setInfo("Compte créé ! Vérifiez votre email pour confirmer, puis connectez-vous.");
+        setMode("login");
+      } else if (user) {
+        onLogin(user);
+      }
+    } catch (e) {
+      setErr(e?.message?.includes("already") ? "Cet email est déjà utilisé" : (e?.message || "Inscription impossible"));
+    } finally {
+      setLoad(false);
+    }
+  };
+
+  const forgot = async () => {
+    setErr(""); setInfo(""); setLoad(true);
+    if (!email.trim()) { setErr("Indiquez votre email"); setLoad(false); return; }
+    if (!isSupabaseConfigured) { setErr("Réinitialisation indisponible"); setLoad(false); return; }
+    try {
+      await resetPassword(email);
+      setInfo("Email de réinitialisation envoyé — consultez votre boîte mail.");
+    } catch {
+      setErr("Impossible d'envoyer l'email");
+    } finally {
+      setLoad(false);
+    }
+  };
+
+  const quick=(c)=>{ if(!DEMO_AUTH) return; onLogin({ ...c, isLocal: true, chIds: c.chIds || [] }); };
 
   const demoRiches=COMPTES.filter(c=>!c.vierge);
   const demoVierges=COMPTES.filter(c=>c.vierge);
@@ -1309,23 +1468,56 @@ function LoginScreen({ onLogin }) {
 
       <div style={{padding:"24px",maxWidth:480,margin:"0 auto",width:"100%",display:"flex",flexDirection:"column",gap:20}}>
 
-        {/* Connexion manuelle */}
+        {/* Connexion / Inscription */}
         <div className="card" style={{padding:"20px"}}>
-          <div style={{fontSize:13,fontWeight:700,color:"var(--t1)",marginBottom:14}}>Connexion</div>
-          <input className="inp" style={{marginBottom:10}} type="email" placeholder="Email" value={email} onChange={e=>setEmail(e.target.value)} onKeyDown={e=>e.key==="Enter"&&login()}/>
-          <div style={{position:"relative",marginBottom:err?10:14}}>
-            <input className="inp" type={showMdp?"text":"password"} placeholder="Mot de passe" value={mdp} onChange={e=>setMdp(e.target.value)} onKeyDown={e=>e.key==="Enter"&&login()} style={{paddingRight:44}}/>
-            <button onClick={()=>setShowMdp(!showMdp)} style={{position:"absolute",right:10,top:"50%",transform:"translateY(-50%)",background:"none",border:"none",cursor:"pointer",fontSize:16,color:"var(--t4)"}}>
+          <div style={{display:"flex",gap:8,marginBottom:16}}>
+            {[{id:"login",l:"Connexion"},{id:"signup",l:"Créer un compte"}].map(t=>(
+              <button key={t.id} type="button" onClick={()=>{setMode(t.id);setErr("");setInfo("");}} style={{flex:1,padding:"10px",borderRadius:"var(--r2)",border:"1.5px solid "+(mode===t.id?"var(--blue)":"var(--g2)"),background:mode===t.id?"var(--blue-l)":"var(--w)",color:mode===t.id?"var(--blue)":"var(--t3)",fontWeight:700,fontSize:13,cursor:"pointer",fontFamily:"var(--f)"}}>{t.l}</button>
+            ))}
+          </div>
+
+          {mode==="signup"&&(
+            <>
+              <input className="inp" style={{marginBottom:10}} placeholder="Nom de l'entreprise" value={entreprise} onChange={e=>setEntreprise(e.target.value)}/>
+              <input className="inp" style={{marginBottom:10}} placeholder="Votre nom" value={nom} onChange={e=>setNom(e.target.value)}/>
+            </>
+          )}
+
+          <input className="inp" style={{marginBottom:10}} type="email" placeholder="Email" value={email} onChange={e=>setEmail(e.target.value)} onKeyDown={e=>e.key==="Enter"&&(mode==="signup"?signup():login())}/>
+          <div style={{position:"relative",marginBottom:mode==="signup"?10:err||info?10:14}}>
+            <input className="inp" type={showMdp?"text":"password"} placeholder="Mot de passe" value={mdp} onChange={e=>setMdp(e.target.value)} onKeyDown={e=>e.key==="Enter"&&(mode==="signup"?signup():login())} style={{paddingRight:44}}/>
+            <button type="button" onClick={()=>setShowMdp(!showMdp)} style={{position:"absolute",right:10,top:"50%",transform:"translateY(-50%)",background:"none",border:"none",cursor:"pointer",fontSize:16,color:"var(--t4)"}}>
               {showMdp?"🙈":"👁"}
             </button>
           </div>
+
+          {mode==="signup"&&(
+            <input className="inp" style={{marginBottom:err||info?10:14}} type={showMdp?"text":"password"} placeholder="Confirmer le mot de passe" value={mdp2} onChange={e=>setMdp2(e.target.value)} onKeyDown={e=>e.key==="Enter"&&signup()}/>
+          )}
+
           {err&&<div style={{padding:"8px 12px",background:"var(--err-l)",border:"1px solid var(--err-b)",borderRadius:"var(--r2)",fontSize:12,color:"var(--err)",fontWeight:600,marginBottom:12}}>{err}</div>}
-          <button className="btn btn-blue btn-fw" onClick={login} disabled={!email||!mdp||load}>
-            {load?"Connexion...":"Se connecter"}
-          </button>
+          {info&&<div style={{padding:"8px 12px",background:"var(--ok-l)",border:"1px solid #BBF7D0",borderRadius:"var(--r2)",fontSize:12,color:"var(--ok)",fontWeight:600,marginBottom:12}}>{info}</div>}
+
+          {mode==="login"?(
+            <>
+              <button className="btn btn-blue btn-fw" onClick={login} disabled={!email||!mdp||load}>
+                {load?"Connexion...":"Se connecter"}
+              </button>
+              <button type="button" className="btn btn-ghost btn-sm btn-fw" style={{marginTop:10}} onClick={forgot} disabled={!email||load}>
+                Mot de passe oublié ?
+              </button>
+            </>
+          ):(
+            <button className="btn btn-ok btn-fw" onClick={signup} disabled={!email||!mdp||!mdp2||!nom||!entreprise||load}>
+              {load?"Création...":"Créer mon compte"}
+            </button>
+          )}
+
+          {mode==="signup"&&<div style={{fontSize:11,color:"var(--t4)",marginTop:12,lineHeight:1.5}}>14 jours d'essai · Plan Starter · Données isolées par entreprise</div>}
         </div>
 
-        {/* Comptes démo vierges — à donner aux prospects */}
+        {DEMO_AUTH&&(
+        <>
         <div>
           <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
             <div style={{flex:1,height:1,background:"var(--g2)"}}/>
@@ -1387,6 +1579,8 @@ function LoginScreen({ onLogin }) {
             ))}
           </div>
         </div>
+        </>
+        )}
 
         <div style={{textAlign:"center",fontSize:11,color:"var(--t4)",paddingBottom:20}}>
           BuildEasy © 2026 · contact@buildeasy.eu
@@ -1397,28 +1591,32 @@ function LoginScreen({ onLogin }) {
 }
 
 
-function HomeScreen({ user, perms, data, onNav, onSheet, onUpdCh }) {
+function HomeScreen({ user, perms, data, onNav, onSheet, onUpdCh, onNotify }) {
   const { chantiers,taches,factures,avenants,punch,equipe,incidents,heures,agenda,conges,commandes } = data;
   const role=ROLES[user.role];
-  const myCh=user.role==="admin"?chantiers:chantiers.filter(c=>user.chIds.includes(c.id));
+  const myCh=user.role==="admin"?chantiers:chantiers.filter(c=>chIdsOf(user).includes(c.id));
   const actifs=myCh.filter(c=>c.statut==="actif");
-  const retards=factures.filter(f=>f.statut==="retard");
-  const encaisse=factures.filter(f=>f.statut==="encaissee").reduce((s,f)=>s+f.mt,0);
-  const avAtt=avenants.filter(a=>a.statut==="attente"&&(user.role==="admin"||user.chIds.includes(a.chId)));
-  const punchOuv=punch.filter(p=>p.statut!=="clos"&&(user.role==="admin"||user.chIds.includes(p.chId)));
-  const incOuv=incidents.filter(i=>i.statut==="ouvert"&&(user.role==="admin"||user.chIds.includes(i.chId)));
-  const myTaches=taches.filter(t=>(user.role==="admin"||user.chIds.includes(t.chId))&&t.statut!=="fait");
+  const scopedFactures=user.role==="admin"?factures:factures.filter(f=>chIdsOf(user).includes(f.chId));
+  const retards=perms.montants?scopedFactures.filter(f=>f.statut==="retard"):[];
+  const encaisse=scopedFactures.filter(f=>f.statut==="encaissee").reduce((s,f)=>s+f.mt,0);
+  const avAtt=avenants.filter(a=>a.statut==="attente"&&(user.role==="admin"||chIdsOf(user).includes(a.chId)));
+  const punchOuv=punch.filter(p=>p.statut!=="clos"&&(user.role==="admin"||chIdsOf(user).includes(p.chId)));
+  const incOuv=incidents.filter(i=>i.statut==="ouvert"&&(user.role==="admin"||chIdsOf(user).includes(i.chId)));
+  const myTaches=taches.filter(t=>(user.role==="admin"||chIdsOf(user).includes(t.chId))&&t.statut!=="fait");
   const monCh=myCh.find(c=>c.statut==="actif");
   const todayStr=new Date().toLocaleDateString("fr-FR",{day:"2-digit",month:"2-digit",year:"2-digit"}).replace(/\//g,"/");
   const todayISO=new Date().toISOString().split("T")[0];
   const agendaToday=(agenda||[]).filter(e=>e.date===todayStr);
-  const congesAtt=(conges||[]).filter(c=>c.statut==="attente");
-  const heuresNonSaisies=(equipe||[]).filter(m=>m.statut!=="absent"&&!(heures||[]).some(h=>h.nom===m.nom&&h.date===todayISO));
+  const myEquipe=user.role==="admin"?equipe:(equipe||[]).filter(m=>(m.chIds||[]).some(id=>chIdsOf(user).includes(id)));
+  const congesAtt=(conges||[]).filter(c=>c.statut==="attente"&&(user.role==="admin"||myEquipe.some(m=>m.nom===c.nom)));
+  const cmdEnCours=(commandes||[]).filter(c=>(c.statut==="commandee"||c.statut==="attente")&&(user.role==="admin"||chIdsOf(user).includes(c.chId)));
+  const livraisonsJour=cmdEnCours.filter(c=>c.livraison===todayStr);
+  const heuresAujourdhui=(heures||[]).some(h=>h.nom===user.nom&&h.date===todayISO);
+  const heuresNonSaisies=myEquipe.filter(m=>m.statut!=="absent"&&!(heures||[]).some(h=>h.nom===m.nom&&h.date===todayISO));
   const totalMasseSalariale=actifs.reduce((s,c)=>{
     const h=(heures||[]).filter(x=>x.chId===c.id).reduce((ss,x)=>ss+calcH(x),0);
     return s+Math.round(h*(c.taux||35));
   },0);
-  const cmdEnCours=(commandes||[]).filter(c=>c.statut==="commandee"||c.statut==="attente");
   const tIco={visite:"👤",reunion:"📅",livraison:"📦",prospect:"💼",securite:"⛑️",autre:"📌"};
 
   return (
@@ -1429,7 +1627,7 @@ function HomeScreen({ user, perms, data, onNav, onSheet, onUpdCh }) {
             <Av nom={user.nom} color={role.color} size={44}/>
             <div><div style={{fontSize:16,fontWeight:700,color:"var(--t1)"}}>Bonjour, {user.nom.split(" ")[0]}</div><div style={{fontSize:12,color:"var(--t3)",marginTop:2}}>{role.label} · {new Date().toLocaleDateString("fr-FR",{weekday:"long",day:"numeric",month:"long"})}</div></div>
           </div>
-          {(retards.length>0||incOuv.length>0)&&<div style={{padding:"5px 10px",background:"var(--err-l)",border:"1px solid var(--err-b)",borderRadius:"var(--r)"}}><span style={{fontSize:11,fontWeight:700,color:"var(--err)"}}>⚠ {retards.length+incOuv.length} alerte{retards.length+incOuv.length>1?"s":""}</span></div>}
+          {((perms.montants&&retards.length>0)||(perms.incidents&&incOuv.length>0))&&<div style={{padding:"5px 10px",background:"var(--err-l)",border:"1px solid var(--err-b)",borderRadius:"var(--r)"}}><span style={{fontSize:11,fontWeight:700,color:"var(--err)"}}>⚠ {(perms.montants?retards.length:0)+(perms.incidents?incOuv.length:0)} alerte{((perms.montants?retards.length:0)+(perms.incidents?incOuv.length:0))>1?"s":""}</span></div>}
         </div>
       </div>
       <div style={{padding:"18px 20px",display:"flex",flexDirection:"column",gap:20}}>
@@ -1474,6 +1672,12 @@ function HomeScreen({ user, perms, data, onNav, onSheet, onUpdCh }) {
                   ⚠ Heures non saisies : {heuresNonSaisies.map(m=>m.nom.split(" ")[0]).join(", ")}
                 </div>
               )}
+              {livraisonsJour.length>0&&(
+                <div style={{marginTop:10,padding:"8px 10px",background:"var(--blue-l)",border:"1px solid var(--blue-b)",borderRadius:"var(--r)",fontSize:12,color:"var(--blue)"}}>
+                  📦 Livraison{livraisonsJour.length>1?"s":""} aujourd'hui : {livraisonsJour.map(c=>c.fournisseur.split(" ")[0]).join(", ")}
+                  <button className="btn btn-ghost btn-xs" style={{marginLeft:8}} onClick={()=>onNav("commandes")}>Voir →</button>
+                </div>
+              )}
               <button className="btn btn-ghost btn-sm" style={{marginTop:10}} onClick={()=>onNav("agenda")}>Voir l'agenda complet →</button>
             </div>
           </div>
@@ -1488,8 +1692,9 @@ function HomeScreen({ user, perms, data, onNav, onSheet, onUpdCh }) {
                 <div style={{flex:1,paddingRight:12}}>
                   <div style={{fontSize:16,fontWeight:700,color:"var(--t1)",marginBottom:4}}>{monCh.nom}</div>
                   <a href={"https://maps.google.com/?q="+encodeURIComponent(monCh.adresse||"")} target="_blank" rel="noopener noreferrer" style={{textDecoration:"none"}}>
-                    <div style={{fontSize:13,color:"var(--blue)",marginBottom:8}}>📍 {monCh.adresse} →</div>
+                    <div style={{fontSize:13,color:"var(--blue)",marginBottom:4}}>📍 {monCh.adresse} →</div>
                   </a>
+                  <AddrActions adresse={monCh.adresse} onCopy={onNotify}/>
                   <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
                     {monCh.rdv&&<div style={{padding:"4px 10px",background:"var(--blue-l)",border:"1px solid var(--blue-b)",borderRadius:"var(--r)",fontSize:12,fontWeight:600,color:"var(--blue)"}}>🕐 RDV {monCh.rdv}</div>}
                     {monCh.meteo&&monCh.meteo!=="—"&&<div style={{padding:"4px 10px",background:"var(--g1)",border:"1px solid var(--g2)",borderRadius:"var(--r)",fontSize:12,color:"var(--t3)"}}>🌤 {monCh.meteo}</div>}
@@ -1535,6 +1740,20 @@ function HomeScreen({ user, perms, data, onNav, onSheet, onUpdCh }) {
           </div>
         )}
 
+        {/* ── Saisie heures rapide (compagnon / chef) ── */}
+        {perms.heures&&monCh&&!heuresAujourdhui&&(user.role==="employe"||user.role==="chef")&&(
+          <div className="u0">
+            <div className="card" style={{padding:"14px 16px",borderLeft:"4px solid var(--ok)",display:"flex",alignItems:"center",gap:12}}>
+              <div style={{fontSize:26}}>⏱</div>
+              <div style={{flex:1}}>
+                <div style={{fontSize:14,fontWeight:700,color:"var(--t1)"}}>Heures du jour</div>
+                <div style={{fontSize:12,color:"var(--t3)"}}>Pas encore saisies pour aujourd'hui</div>
+              </div>
+              <button className="btn btn-ok btn-sm" onClick={()=>onSheet("heure",{defaultChId:monCh.id})}>Saisir</button>
+            </div>
+          </div>
+        )}
+
         {/* ── KPIs gérant enrichis ── */}
         {user.role==="admin"&&(
           <div className="u1">
@@ -1558,20 +1777,20 @@ function HomeScreen({ user, perms, data, onNav, onSheet, onUpdCh }) {
         )}
 
         {/* ── Alertes critiques ── */}
-        {retards.length>0&&<div className="u1"><Alert msg={"⚠ "+retards.length+" facture"+(retards.length>1?"s en retard":" en retard")} type="err">{retards.map(f=><div key={f.id} className="row" style={{padding:"5px 0",borderBottom:"1px solid var(--err-b)"}}><span style={{fontSize:13,color:"var(--t2)",fontWeight:500}}>{f.client}</span><span style={{fontSize:13,fontWeight:700,color:"var(--err)"}}>{EUR(f.mt)}</span></div>)}<button className="btn btn-out btn-sm" style={{marginTop:10,width:"100%"}} onClick={()=>onNav("finances")}>Gérer →</button></Alert></div>}
-        {incOuv.length>0&&<div className="u1"><Alert msg={"⚠ "+incOuv.length+" incident"+(incOuv.length>1?"s non traités":" non traité")} type="err">{incOuv.slice(0,2).map(i=>{const ch=chantiers.find(c=>c.id===i.chId);return <div key={i.id} style={{fontSize:12,color:"var(--t2)",padding:"3px 0"}}>{i.ref} · {ch?.nom?.split(" ").slice(0,3).join(" ")||"—"}</div>;})}<button className="btn btn-out btn-sm" style={{marginTop:10,width:"100%"}} onClick={()=>onNav("incidents")}>Traiter →</button></Alert></div>}
-        {user.role==="client"&&avAtt.filter(a=>user.chIds.includes(a.chId)).length>0&&<div className="u1"><Alert msg="Avenants en attente de signature" type="warn">{avAtt.filter(a=>user.chIds.includes(a.chId)).map(a=><div key={a.id} className="row" style={{padding:"5px 0",borderBottom:"1px solid var(--warn-b)"}}><span style={{fontSize:13,color:"var(--t2)",fontWeight:500}}>{a.titre}</span><span style={{fontSize:13,fontWeight:700,color:"var(--t1)"}}>{EUR(a.mt)}</span></div>)}<button className="btn btn-warn btn-sm" style={{marginTop:10,width:"100%"}} onClick={()=>onNav("avenants")}>Signer →</button></Alert></div>}
+        {perms.montants&&retards.length>0&&<div className="u1"><Alert msg={"⚠ "+retards.length+" facture"+(retards.length>1?"s en retard":" en retard")} type="err">{retards.map(f=><div key={f.id} className="row" style={{padding:"5px 0",borderBottom:"1px solid var(--err-b)"}}><span style={{fontSize:13,color:"var(--t2)",fontWeight:500}}>{f.client}</span><span style={{fontSize:13,fontWeight:700,color:"var(--err)"}}>{EUR(f.mt)}</span></div>)}<button className="btn btn-out btn-sm" style={{marginTop:10,width:"100%"}} onClick={()=>onNav("finances")}>Gérer →</button></Alert></div>}
+        {perms.incidents&&incOuv.length>0&&<div className="u1"><Alert msg={"⚠ "+incOuv.length+" incident"+(incOuv.length>1?"s non traités":" non traité")} type="err">{incOuv.slice(0,2).map(i=>{const ch=chantiers.find(c=>c.id===i.chId);return <div key={i.id} style={{fontSize:12,color:"var(--t2)",padding:"3px 0"}}>{i.ref} · {ch?.nom?.split(" ").slice(0,3).join(" ")||"—"}</div>;})}<button className="btn btn-out btn-sm" style={{marginTop:10,width:"100%"}} onClick={()=>onNav("incidents")}>Traiter →</button></Alert></div>}
+        {user.role==="client"&&avAtt.filter(a=>chIdsOf(user).includes(a.chId)).length>0&&<div className="u1"><Alert msg="Avenants en attente de signature" type="warn">{avAtt.filter(a=>chIdsOf(user).includes(a.chId)).map(a=><div key={a.id} className="row" style={{padding:"5px 0",borderBottom:"1px solid var(--warn-b)"}}><span style={{fontSize:13,color:"var(--t2)",fontWeight:500}}>{a.titre}</span><span style={{fontSize:13,fontWeight:700,color:"var(--t1)"}}>{EUR(a.mt)}</span></div>)}<button className="btn btn-warn btn-sm" style={{marginTop:10,width:"100%"}} onClick={()=>onNav("avenants")}>Signer →</button></Alert></div>}
 
         {/* ── Équipe chef enrichie ── */}
         {user.role==="chef"&&(
           <div className="u2">
             <div className="sec">Équipe aujourd'hui</div>
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8}}>
-              {[{l:"Présents",v:equipe.filter(m=>m.statut==="present").length,c:"var(--ok)"},{l:"Retards",v:equipe.filter(m=>m.statut==="retard").length,c:"var(--warn)"},{l:"Absents",v:equipe.filter(m=>m.statut==="absent").length,c:"var(--err)"}].map((m,i)=><div key={i} className="card" style={{padding:"10px",textAlign:"center"}}><div style={{fontSize:22,fontWeight:800,color:m.c,marginBottom:3}}>{m.v}</div><div style={{fontSize:11,color:"var(--t3)"}}>{m.l}</div></div>)}
+              {[{l:"Présents",v:myEquipe.filter(m=>m.statut==="present").length,c:"var(--ok)"},{l:"Retards",v:myEquipe.filter(m=>m.statut==="retard").length,c:"var(--warn)"},{l:"Absents",v:myEquipe.filter(m=>m.statut==="absent").length,c:"var(--err)"}].map((m,i)=><div key={i} className="card" style={{padding:"10px",textAlign:"center"}}><div style={{fontSize:22,fontWeight:800,color:m.c,marginBottom:3}}>{m.v}</div><div style={{fontSize:11,color:"var(--t3)"}}>{m.l}</div></div>)}
             </div>
-            {equipe.filter(m=>m.statut==="retard").length>0&&(
+            {myEquipe.filter(m=>m.statut==="retard").length>0&&(
               <Alert msg="En retard" type="warn">
-                {equipe.filter(m=>m.statut==="retard").map(m=>(
+                {myEquipe.filter(m=>m.statut==="retard").map(m=>(
                   <div key={m.id} style={{display:"flex",alignItems:"center",gap:8,padding:"4px 0"}}>
                     <Av nom={m.nom} color="var(--warn)" size={28}/>
                     <span style={{fontSize:13,color:"var(--t2)",fontWeight:500}}>{m.nom} — {m.fn}</span>
@@ -1620,27 +1839,28 @@ function HomeScreen({ user, perms, data, onNav, onSheet, onUpdCh }) {
         <div className="u3">
           <div className="sec">Actions rapides</div>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
-            {perms.rapport&&<div className="card tap" style={{padding:"16px",cursor:"pointer"}} onClick={()=>onSheet("rapport")}><div style={{fontSize:24,marginBottom:8}}>📋</div><div style={{fontSize:14,fontWeight:700,color:"var(--t1)",marginBottom:3}}>Compte-rendu</div><div style={{fontSize:12,color:"var(--t3)"}}>Rapport journalier</div></div>}
-            {perms.chat&&<div className="card tap" style={{padding:"16px",cursor:"pointer"}} onClick={()=>onNav("chat")}><div style={{fontSize:24,marginBottom:8}}>💬</div><div style={{fontSize:14,fontWeight:700,color:"var(--t1)",marginBottom:3}}>Messagerie</div><div style={{fontSize:12,color:"var(--t3)"}}>Chat chantier</div></div>}
-            {perms.gPunch&&<div className="card tap" style={{padding:"16px",cursor:"pointer"}} onClick={()=>onNav("punch")}><div style={{fontSize:24,marginBottom:8}}>🔧</div><div style={{fontSize:14,fontWeight:700,color:"var(--t1)",marginBottom:3}}>Réserves</div><div style={{fontSize:12,color:"var(--t3)"}}>{punchOuv.length} ouvertes</div></div>}
-            {perms.creerCh&&<div className="card tap" style={{padding:"16px",cursor:"pointer"}} onClick={()=>onSheet("chantier")}><div style={{fontSize:24,marginBottom:8}}>🏗</div><div style={{fontSize:14,fontWeight:700,color:"var(--t1)",marginBottom:3}}>Nouveau chantier</div><div style={{fontSize:12,color:"var(--t3)"}}>Créer un dossier</div></div>}
-            {perms.creerAv&&<div className="card tap" style={{padding:"16px",cursor:"pointer"}} onClick={()=>onSheet("avenant")}><div style={{fontSize:24,marginBottom:8}}>📄</div><div style={{fontSize:14,fontWeight:700,color:"var(--t1)",marginBottom:3}}>Avenant</div><div style={{fontSize:12,color:"var(--t3)"}}>Travaux supplémentaires</div></div>}
-            {perms.montants&&<div className="card tap" style={{padding:"16px",cursor:"pointer"}} onClick={()=>onSheet("devis")}><div style={{fontSize:24,marginBottom:8}}>📝</div><div style={{fontSize:14,fontWeight:700,color:"var(--t1)",marginBottom:3}}>Nouveau devis</div><div style={{fontSize:12,color:"var(--t3)"}}>Chiffrer un projet</div></div>}
-            {perms.heures&&<div className="card tap" style={{padding:"16px",cursor:"pointer"}} onClick={()=>onNav("heures")}><div style={{fontSize:24,marginBottom:8}}>⏱</div><div style={{fontSize:14,fontWeight:700,color:"var(--t1)",marginBottom:3}}>Planning heures</div><div style={{fontSize:12,color:"var(--t3)"}}>Semaine équipe</div></div>}
-            <div className="card tap" style={{padding:"16px",cursor:"pointer"}} onClick={()=>onNav("agenda")}><div style={{fontSize:24,marginBottom:8}}>📅</div><div style={{fontSize:14,fontWeight:700,color:"var(--t1)",marginBottom:3}}>Agenda</div><div style={{fontSize:12,color:"var(--t3)"}}>{agendaToday.length} événement{agendaToday.length>1?"s":""} aujourd'hui</div></div>
+            {perms.rapport&&<div role="button" tabIndex={0} aria-label="Compte-rendu" className="card tap" style={{padding:"16px",cursor:"pointer"}} onClick={()=>onSheet("rapport")} onKeyDown={e=>(e.key==="Enter"||e.key===" ")&&(e.preventDefault(),onSheet("rapport"))}><div style={{fontSize:24,marginBottom:8}}>📋</div><div style={{fontSize:14,fontWeight:700,color:"var(--t1)",marginBottom:3}}>Compte-rendu</div><div style={{fontSize:12,color:"var(--t3)"}}>Rapport journalier</div></div>}
+            {perms.chat&&<div role="button" tabIndex={0} aria-label="Messagerie" className="card tap" style={{padding:"16px",cursor:"pointer"}} onClick={()=>onNav("chat")} onKeyDown={e=>(e.key==="Enter"||e.key===" ")&&(e.preventDefault(),onNav("chat"))}><div style={{fontSize:24,marginBottom:8}}>💬</div><div style={{fontSize:14,fontWeight:700,color:"var(--t1)",marginBottom:3}}>Messagerie</div><div style={{fontSize:12,color:"var(--t3)"}}>Chat chantier</div></div>}
+            {perms.gPunch&&<div role="button" tabIndex={0} aria-label="Réserves" className="card tap" style={{padding:"16px",cursor:"pointer"}} onClick={()=>onNav("punch")} onKeyDown={e=>(e.key==="Enter"||e.key===" ")&&(e.preventDefault(),onNav("punch"))}><div style={{fontSize:24,marginBottom:8}}>🔧</div><div style={{fontSize:14,fontWeight:700,color:"var(--t1)",marginBottom:3}}>Réserves</div><div style={{fontSize:12,color:"var(--t3)"}}>{punchOuv.length} ouvertes</div></div>}
+            {perms.creerCh&&<div role="button" tabIndex={0} aria-label="Nouveau chantier" className="card tap" style={{padding:"16px",cursor:"pointer"}} onClick={()=>onSheet("chantier")} onKeyDown={e=>(e.key==="Enter"||e.key===" ")&&(e.preventDefault(),onSheet("chantier"))}><div style={{fontSize:24,marginBottom:8}}>🏗</div><div style={{fontSize:14,fontWeight:700,color:"var(--t1)",marginBottom:3}}>Nouveau chantier</div><div style={{fontSize:12,color:"var(--t3)"}}>Créer un dossier</div></div>}
+            {perms.creerAv&&<div role="button" tabIndex={0} aria-label="Avenant" className="card tap" style={{padding:"16px",cursor:"pointer"}} onClick={()=>onSheet("avenant")} onKeyDown={e=>(e.key==="Enter"||e.key===" ")&&(e.preventDefault(),onSheet("avenant"))}><div style={{fontSize:24,marginBottom:8}}>📄</div><div style={{fontSize:14,fontWeight:700,color:"var(--t1)",marginBottom:3}}>Avenant</div><div style={{fontSize:12,color:"var(--t3)"}}>Travaux supplémentaires</div></div>}
+            {perms.montants&&<div role="button" tabIndex={0} aria-label="Nouveau devis" className="card tap" style={{padding:"16px",cursor:"pointer"}} onClick={()=>onSheet("devis")} onKeyDown={e=>(e.key==="Enter"||e.key===" ")&&(e.preventDefault(),onSheet("devis"))}><div style={{fontSize:24,marginBottom:8}}>📝</div><div style={{fontSize:14,fontWeight:700,color:"var(--t1)",marginBottom:3}}>Nouveau devis</div><div style={{fontSize:12,color:"var(--t3)"}}>Chiffrer un projet</div></div>}
+            {perms.heures&&<div role="button" tabIndex={0} aria-label="Saisir mes heures" className="card tap" style={{padding:"16px",cursor:"pointer"}} onClick={()=>onSheet("heure",monCh?{defaultChId:monCh.id}:undefined)} onKeyDown={e=>(e.key==="Enter"||e.key===" ")&&(e.preventDefault(),onSheet("heure",monCh?{defaultChId:monCh.id}:undefined))}><div style={{fontSize:24,marginBottom:8}}>⏱</div><div style={{fontSize:14,fontWeight:700,color:"var(--t1)",marginBottom:3}}>Saisir mes heures</div><div style={{fontSize:12,color:"var(--t3)"}}>Pointage du jour</div></div>}
+            {perms.heures&&<div role="button" tabIndex={0} aria-label="Planning heures" className="card tap" style={{padding:"16px",cursor:"pointer"}} onClick={()=>onNav("heures")} onKeyDown={e=>(e.key==="Enter"||e.key===" ")&&(e.preventDefault(),onNav("heures"))}><div style={{fontSize:24,marginBottom:8}}>📊</div><div style={{fontSize:14,fontWeight:700,color:"var(--t1)",marginBottom:3}}>Planning heures</div><div style={{fontSize:12,color:"var(--t3)"}}>Semaine équipe</div></div>}
+            <div role="button" tabIndex={0} aria-label="Agenda" className="card tap" style={{padding:"16px",cursor:"pointer"}} onClick={()=>onNav("agenda")} onKeyDown={e=>(e.key==="Enter"||e.key===" ")&&(e.preventDefault(),onNav("agenda"))}><div style={{fontSize:24,marginBottom:8}}>📅</div><div style={{fontSize:14,fontWeight:700,color:"var(--t1)",marginBottom:3}}>Agenda</div><div style={{fontSize:12,color:"var(--t3)"}}>{agendaToday.length} événement{agendaToday.length>1?"s":""} aujourd'hui</div></div>
           </div>
         </div>
       </div>
     </div>
   );
 }
-function ChantiersScreen({ user, perms, chantiers, taches, equipe, heures, commandes, notes, onSave, onNav, onAddNote, onDelNote }) {
+function ChantiersScreen({ user, perms, chantiers, taches, equipe, heures, commandes, notes, onSave, onNav, onAddNote, onDelNote, onNotify }) {
   const [q,setQ]=useState("");
   const [f,setF]=useState("tous");
   const [selId,setSelId]=useState(null);
   const [showEdit,setShowEdit]=useState(false);
   const [noteTxt,setNoteTxt]=useState("");
-  const visible=(user.role==="admin"?chantiers:chantiers.filter(c=>user.chIds.includes(c.id))).filter(c=>(f==="tous"||c.statut===f)&&(c.nom+(c.client||"")).toLowerCase().includes(q.toLowerCase()));
+  const visible=(user.role==="admin"?chantiers:chantiers.filter(c=>chIdsOf(user).includes(c.id))).filter(c=>(f==="tous"||c.statut===f)&&(c.nom+(c.client||"")).toLowerCase().includes(q.toLowerCase()));
   const getStats=c=>{
     const ct=taches.filter(t=>t.chId===c.id);
     const ce=equipe.filter(m=>m.chIds&&m.chIds.includes(c.id));
@@ -1670,10 +1890,11 @@ function ChantiersScreen({ user, perms, chantiers, taches, equipe, heures, comma
           </div>
           <PBar v={sel.av} h={8}/>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginTop:14}}>
-            {[{l:"Maître d'ouvrage",v:sel.client||"—",ico:"👤"},{l:"Téléphone",v:sel.tel||"—",ico:"📞",lien:"tel:"+sel.tel},{l:"Adresse",v:sel.adresse||"—",ico:"📍",lien:sel.adresse?"https://maps.google.com/?q="+encodeURIComponent(sel.adresse):null},{l:"Heure de RDV",v:sel.rdv||"—",ico:"🕐"},{l:"Démarrage",v:sel.debut||"—",ico:"📅"},{l:"Fin contractuelle",v:sel.fin||"—",ico:"🏁"},{l:"Météo",v:sel.meteo||"—",ico:"🌤"},{l:"Corps d'état",v:sel.corps||"—",ico:"🔧"}].map(item=>(
+            {[{l:"Maître d'ouvrage",v:sel.client||"—",ico:"👤"},{l:"Téléphone",v:sel.tel||"—",ico:"📞",lien:"tel:"+sel.tel,copy:sel.tel},{l:"Adresse",v:sel.adresse||"—",ico:"📍",lien:sel.adresse?"https://maps.google.com/?q="+encodeURIComponent(sel.adresse):null,addr:sel.adresse},{l:"Heure de RDV",v:sel.rdv||"—",ico:"🕐"},{l:"Démarrage",v:sel.debut||"—",ico:"📅"},{l:"Fin contractuelle",v:sel.fin||"—",ico:"🏁"},{l:"Météo",v:sel.meteo||"—",ico:"🌤"},{l:"Corps d'état",v:sel.corps||"—",ico:"🔧"}].map(item=>(
               <div key={item.l} style={{padding:"10px 12px",background:"var(--g1)",borderRadius:"var(--r2)",border:"1px solid var(--g2)"}}>
                 <div style={{fontSize:10,color:"var(--t4)",textTransform:"uppercase",letterSpacing:".06em",marginBottom:3}}>{item.ico} {item.l}</div>
-                {item.lien?<a href={item.lien} target={item.lien.startsWith("http")?"_blank":undefined} rel="noopener noreferrer" style={{textDecoration:"none"}}><div style={{fontSize:13,fontWeight:600,color:"var(--blue)"}}>{item.v}</div></a>:<div style={{fontSize:13,fontWeight:600,color:"var(--t1)"}}>{item.v}</div>}
+                {item.lien&&!item.addr?<a href={item.lien} target={item.lien.startsWith("http")?"_blank":undefined} rel="noopener noreferrer" style={{textDecoration:"none"}}><div style={{fontSize:13,fontWeight:600,color:"var(--blue)"}}>{item.v}</div></a>:item.copy?<div style={{display:"flex",alignItems:"center",gap:6}}><a href={item.lien} style={{textDecoration:"none"}}><div style={{fontSize:13,fontWeight:600,color:"var(--blue)"}}>{item.v}</div></a><button type="button" className="btn btn-ghost btn-xs" onClick={()=>navigator.clipboard?.writeText(item.copy).then(()=>onNotify?.("Téléphone copié")).catch(()=>{})}>Copier</button></div>:<div style={{fontSize:13,fontWeight:600,color:"var(--t1)"}}>{item.v}</div>}
+                {item.addr&&<AddrActions adresse={item.addr} onCopy={onNotify}/>}
               </div>
             ))}
           </div>
@@ -1736,12 +1957,12 @@ function ChantiersScreen({ user, perms, chantiers, taches, equipe, heures, comma
           <div className="u3">
             <div className="sec">Accès rapide</div>
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
-              {perms.taches&&<div className="card tap" style={{padding:"12px 14px",cursor:"pointer"}} onClick={()=>onNav("taches")}><div style={{fontSize:18,marginBottom:4}}>✅</div><div style={{fontSize:13,fontWeight:700,color:"var(--t1)"}}>Tâches</div><div style={{fontSize:11,color:"var(--t3)"}}>{stats.ct.length} tâche{stats.ct.length>1?"s":""}</div></div>}
-              {perms.chat&&<div className="card tap" style={{padding:"12px 14px",cursor:"pointer"}} onClick={()=>onNav("chat")}><div style={{fontSize:18,marginBottom:4}}>💬</div><div style={{fontSize:13,fontWeight:700,color:"var(--t1)"}}>Messages</div><div style={{fontSize:11,color:"var(--t3)"}}>Chat chantier</div></div>}
-              {perms.heures&&<div className="card tap" style={{padding:"12px 14px",cursor:"pointer"}} onClick={()=>onNav("heures")}><div style={{fontSize:18,marginBottom:4}}>⏱</div><div style={{fontSize:13,fontWeight:700,color:"var(--t1)"}}>Heures</div><div style={{fontSize:11,color:"var(--t3)"}}>{Math.round(stats.totalH)}h saisies</div></div>}
-              {perms.rapports&&<div className="card tap" style={{padding:"12px 14px",cursor:"pointer"}} onClick={()=>onNav("rapports")}><div style={{fontSize:18,marginBottom:4}}>📋</div><div style={{fontSize:13,fontWeight:700,color:"var(--t1)"}}>Rapports</div><div style={{fontSize:11,color:"var(--t3)"}}>Comptes-rendus</div></div>}
-              {perms.punch&&<div className="card tap" style={{padding:"12px 14px",cursor:"pointer"}} onClick={()=>onNav("punch")}><div style={{fontSize:18,marginBottom:4}}>🔧</div><div style={{fontSize:13,fontWeight:700,color:"var(--t1)"}}>Réserves</div><div style={{fontSize:11,color:"var(--t3)"}}>Punch list</div></div>}
-              {perms.avenants&&<div className="card tap" style={{padding:"12px 14px",cursor:"pointer"}} onClick={()=>onNav("avenants")}><div style={{fontSize:18,marginBottom:4}}>📄</div><div style={{fontSize:13,fontWeight:700,color:"var(--t1)"}}>Avenants</div><div style={{fontSize:11,color:"var(--t3)"}}>Travaux sup.</div></div>}
+              {perms.taches&&<div className="card tap" style={{padding:"12px 14px",cursor:"pointer"}} onClick={()=>onNav&&onNav("taches",sel.id)}><div style={{fontSize:18,marginBottom:4}}>✅</div><div style={{fontSize:13,fontWeight:700,color:"var(--t1)"}}>Tâches</div><div style={{fontSize:11,color:"var(--t3)"}}>{stats.ct.length} tâche{stats.ct.length>1?"s":""}</div></div>}
+              {perms.chat&&<div className="card tap" style={{padding:"12px 14px",cursor:"pointer"}} onClick={()=>onNav&&onNav("chat",sel.id)}><div style={{fontSize:18,marginBottom:4}}>💬</div><div style={{fontSize:13,fontWeight:700,color:"var(--t1)"}}>Messages</div><div style={{fontSize:11,color:"var(--t3)"}}>Chat chantier</div></div>}
+              {perms.heures&&<div className="card tap" style={{padding:"12px 14px",cursor:"pointer"}} onClick={()=>onNav&&onNav("heures",sel.id)}><div style={{fontSize:18,marginBottom:4}}>⏱</div><div style={{fontSize:13,fontWeight:700,color:"var(--t1)"}}>Heures</div><div style={{fontSize:11,color:"var(--t3)"}}>{Math.round(stats.totalH)}h saisies</div></div>}
+              {perms.rapports&&<div className="card tap" style={{padding:"12px 14px",cursor:"pointer"}} onClick={()=>onNav&&onNav("rapports",sel.id)}><div style={{fontSize:18,marginBottom:4}}>📋</div><div style={{fontSize:13,fontWeight:700,color:"var(--t1)"}}>Rapports</div><div style={{fontSize:11,color:"var(--t3)"}}>Comptes-rendus</div></div>}
+              {perms.punch&&<div className="card tap" style={{padding:"12px 14px",cursor:"pointer"}} onClick={()=>onNav&&onNav("punch",sel.id)}><div style={{fontSize:18,marginBottom:4}}>🔧</div><div style={{fontSize:13,fontWeight:700,color:"var(--t1)"}}>Réserves</div><div style={{fontSize:11,color:"var(--t3)"}}>Punch list</div></div>}
+              {perms.avenants&&<div className="card tap" style={{padding:"12px 14px",cursor:"pointer"}} onClick={()=>onNav&&onNav("avenants",sel.id)}><div style={{fontSize:18,marginBottom:4}}>📄</div><div style={{fontSize:13,fontWeight:700,color:"var(--t1)"}}>Avenants</div><div style={{fontSize:11,color:"var(--t3)"}}>Travaux sup.</div></div>}
             </div>
           </div>
         )}
@@ -1817,15 +2038,16 @@ function ChantiersScreen({ user, perms, chantiers, taches, equipe, heures, comma
   );
 }
 
-function TachesScreen({ user, perms, taches, chantiers, equipe, onEditT, onSheet }) {
+function TachesScreen({ user, perms, taches, chantiers, equipe, onEditT, onSheet, initialChFilter }) {
   const [f,setF]=useState("tous");
-  const [chF,setChF]=useState("tous");
+  const [chF,setChF]=useState(initialChFilter?String(initialChFilter):"tous");
+  useEffect(()=>{if(initialChFilter)setChF(String(initialChFilter));},[initialChFilter]);
   const [q,setQ]=useState("");
   const [moi,setMoi]=useState(user.role==="chef"); // chef voit ses tâches par défaut
   const [selId,setSelId]=useState(null);
   const [editId,setEditId]=useState(null);
   const [editF,setEditF]=useState({});
-  const base=(user.role==="admin"?taches:taches.filter(t=>user.chIds.includes(t.chId)));
+  const base=(user.role==="admin"?taches:taches.filter(t=>chIdsOf(user).includes(t.chId)));
   const baseMoi=moi?base.filter(t=>t.resp&&(t.resp===user.nom||t.resp.includes(user.nom.split(" ")[0]))):base;
   const visible=baseMoi.filter(t=>(f==="tous"||t.statut===f)&&(chF==="tous"||t.chId===parseInt(chF))&&(q===""||t.titre.toLowerCase().includes(q.toLowerCase())||(t.resp||"").toLowerCase().includes(q.toLowerCase())));
   const sc={fait:"var(--ok)",en_cours:"var(--blue)",planif:"var(--t4)"};
@@ -1986,7 +2208,9 @@ function TachesScreen({ user, perms, taches, chantiers, equipe, onEditT, onSheet
 function FinancesScreen({ user, perms, factures, chantiers, heures, equipe, commandes, onSheet, onChangeStatut, onPrint }) {
   if(!perms.finances) return <div className="empty" style={{paddingTop:80}}><p style={{fontSize:14,fontWeight:600}}>Accès restreint</p></div>;
   const [chF,setChF]=useState("tous");
-  const vis=chF==="tous"?factures:factures.filter(f=>f.chId===parseInt(chF));
+  const myCh=visibleChantiers(user, chantiers);
+  const baseFactures=filterByChAccess(user, factures);
+  const vis=chF==="tous"?baseFactures:baseFactures.filter(f=>f.chId===parseInt(chF));
   const total=vis.reduce((s,f)=>s+f.mt,0);
   const enc=vis.filter(f=>f.statut==="encaissee").reduce((s,f)=>s+f.mt,0);
   const att=vis.filter(f=>f.statut==="emise").reduce((s,f)=>s+f.mt,0);
@@ -1998,7 +2222,7 @@ function FinancesScreen({ user, perms, factures, chantiers, heures, equipe, comm
         {onSheet&&<button className="btn btn-blue btn-fw" style={{marginBottom:10}} onClick={()=>onSheet("facture")}>+ Nouvelle facture</button>}
         <select className="inp" style={{height:38,fontSize:13,marginBottom:10}} value={chF} onChange={e=>setChF(e.target.value)}>
           <option value="tous">Tous les chantiers</option>
-          {chantiers.map(c=><option key={c.id} value={c.id}>{c.nom}</option>)}
+          {myCh.map(c=><option key={c.id} value={c.id}>{c.nom}</option>)}
         </select>
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
           {[{l:"Total facturé",v:EUR(total),c:"var(--t1)"},{l:"Encaissé",v:EUR(enc),c:"var(--ok)"},{l:"En attente",v:EUR(att),c:"var(--blue)"},{l:"En retard",v:EUR(ret),c:ret>0?"var(--err)":"var(--t4)"}].map((m,i)=>(
@@ -2012,8 +2236,8 @@ function FinancesScreen({ user, perms, factures, chantiers, heures, equipe, comm
         {chF==="tous"&&(
           <div>
             <div className="sec">CA par chantier</div>
-            {chantiers.filter(c=>factures.some(f=>f.chId===c.id)).map(c=>{
-              const cFac=factures.filter(f=>f.chId===c.id);
+            {myCh.filter(c=>baseFactures.some(f=>f.chId===c.id)).map(c=>{
+              const cFac=baseFactures.filter(f=>f.chId===c.id);
               const cEnc=cFac.filter(f=>f.statut==="encaissee").reduce((s,f)=>s+f.mt,0);
               const cTotal=cFac.reduce((s,f)=>s+f.mt,0);
               return (
@@ -2031,7 +2255,7 @@ function FinancesScreen({ user, perms, factures, chantiers, heures, equipe, comm
         )}
         {/* Rentabilité globale */}
         {chF==="tous"&&perms.montants&&(()=>{
-          const actifs=chantiers.filter(c=>c.statut==="actif");
+          const actifs=myCh.filter(c=>c.statut==="actif");
           const budgetT=actifs.reduce((s,c)=>s+c.budget,0);
           const coutMOT=actifs.reduce((s,c)=>s+calcCoutsMO(c.id,heures,equipe).coutMO,0);
           const coutMatT=actifs.reduce((s,c)=>s+Math.max(c.dep||0,commandes.filter(x=>x.chId===c.id&&x.statut==="livree").reduce((ss,x)=>ss+(x.mt||0),0)),0);
@@ -2055,8 +2279,8 @@ function FinancesScreen({ user, perms, factures, chantiers, heures, equipe, comm
         {vis.length===0&&<div className="empty"><p style={{fontSize:14,fontWeight:600}}>Aucune facture</p></div>}
         {/* Trésorerie prévisionnelle 30 jours */}
         {chF==="tous"&&perms.montants&&(()=>{
-          const encaisse=factures.filter(f=>f.statut==="encaissee").reduce((s,f)=>s+f.mt,0);
-          const aRecevoir=factures.filter(f=>f.statut==="emise"||f.statut==="retard").reduce((s,f)=>s+f.mt,0);
+          const encaisse=baseFactures.filter(f=>f.statut==="encaissee").reduce((s,f)=>s+f.mt,0);
+          const aRecevoir=baseFactures.filter(f=>f.statut==="emise"||f.statut==="retard").reduce((s,f)=>s+f.mt,0);
           const previsionnelle=encaisse+aRecevoir;
           return (
             <div className="card" style={{padding:"14px 16px",borderLeft:"3px solid var(--blue)"}}>
@@ -2072,7 +2296,6 @@ function FinancesScreen({ user, perms, factures, chantiers, heures, equipe, comm
             </div>
           );
         })()}
-        <div className="sec">Détail des factures</div>
         {vis.map((f,i)=>{
           const sf=sfM[f.statut]||{l:f.statut,t:"gray"};
           const ch=chantiers.find(c=>c.id===f.chId);
@@ -2110,10 +2333,11 @@ function FinancesScreen({ user, perms, factures, chantiers, heures, equipe, comm
   );
 }
 
-function ChatScreen({ user, perms, messages, chantiers, onSend, onSheet }) {
+function ChatScreen({ user, perms, messages, chantiers, onSend, onSheet, initialChId }) {
   if(!perms.chat) return <div className="empty" style={{paddingTop:80}}><p style={{fontSize:14}}>Accès non disponible</p></div>;
-  const myCh=(user.role==="admin"?chantiers:chantiers.filter(c=>user.chIds.includes(c.id))).filter(c=>c.statut==="actif");
-  const [chId,setChId]=useState(myCh[0]?.id||"");
+  const myCh=(user.role==="admin"?chantiers:chantiers.filter(c=>chIdsOf(user).includes(c.id))).filter(c=>c.statut!=="livre");
+  const [chId,setChId]=useState(()=>String(initialChId||myCh[0]?.id||""));
+  useEffect(()=>{if(initialChId)setChId(String(initialChId));},[initialChId]);
   const [txt,setTxt]=useState("");
   const ref=useRef(null);
   const msgs=messages.filter(m=>m.chId===parseInt(chId));
@@ -2155,13 +2379,14 @@ function ChatScreen({ user, perms, messages, chantiers, onSend, onSheet }) {
   );
 }
 
-function AvenantsScreen({ user, perms, avenants, chantiers, onValider }) {
+function AvenantsScreen({ user, perms, avenants, chantiers, onValider, onSheet }) {
   if(!perms.avenants) return <div className="empty" style={{paddingTop:80}}><p style={{fontSize:14}}>Accès non disponible</p></div>;
-  const visible=user.role==="client"?avenants.filter(a=>user.chIds.includes(a.chId)):avenants;
+  const visible=user.role==="client"?avenants.filter(a=>chIdsOf(user).includes(a.chId)):avenants;
   const sfM={signe:{l:"Signé",t:"ok"},attente:{l:"En attente",t:"warn"},refuse:{l:"Refusé",t:"err"}};
   return (
     <div style={{paddingBottom:100,overflowY:"auto",height:"100%"}}>
       <div style={{padding:"20px",display:"flex",flexDirection:"column",gap:12}}>
+        {perms.creerAv&&onSheet&&<button className="btn btn-blue btn-fw" onClick={()=>onSheet("avenant")}>+ Nouvel avenant</button>}
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
           {[{l:"Signés",v:EUR(visible.filter(a=>a.statut==="signe").reduce((s,a)=>s+a.mt,0)),c:"var(--ok)"},{l:"En attente",v:EUR(visible.filter(a=>a.statut==="attente").reduce((s,a)=>s+a.mt,0)),c:"var(--warn)"}].map((m,i)=><div key={i} className="card" style={{padding:"14px 16px"}}><div style={{fontSize:20,fontWeight:800,color:m.c,marginBottom:3}}>{m.v}</div><div style={{fontSize:12,color:"var(--t3)"}}>{m.l}</div></div>)}
         </div>
@@ -2199,7 +2424,7 @@ function HeuresScreen({ user, perms, heures, chantiers, equipe, onValider, onShe
   const vis=user.role==="employe"
     ? heures.filter(h=>h.nom===user.nom)
     : user.role==="chef"
-      ? heures.filter(h=>user.chIds.some(cid=>h.chId===cid))
+      ? heures.filter(h=>chIdsOf(user).some(cid=>h.chId===cid))
       : heures;
   const parJ=sem.map(d=>({date:d,iso:iso(d),entries:vis.filter(h=>h.date===iso(d)),total:vis.filter(h=>h.date===iso(d)).reduce((s,h)=>s+calcH(h),0)}));
   const totalS=parJ.reduce((s,j)=>s+j.total,0);
@@ -2345,7 +2570,7 @@ function HeuresScreen({ user, perms, heures, chantiers, equipe, onValider, onShe
 function PunchScreen({ user, perms, punch, chantiers, onUpdate }) {
   if(!perms.punch) return <div className="empty" style={{paddingTop:80}}><p style={{fontSize:14}}>Accès non disponible</p></div>;
   const [f,setF]=useState("tous");
-  const visible=(user.role==="admin"?punch:punch.filter(p=>user.chIds.includes(p.chId))).filter(p=>f==="tous"||p.statut===f);
+  const visible=(user.role==="admin"?punch:punch.filter(p=>chIdsOf(user).includes(p.chId))).filter(p=>f==="tous"||p.statut===f);
   const sfM={ouvert:{l:"Ouvert",t:"err",c:"var(--err)"},encours:{l:"En cours",t:"warn",c:"var(--warn)"},clos:{l:"Clos",t:"ok",c:"var(--ok)"}};
   return (
     <div style={{paddingBottom:100,overflowY:"auto",height:"100%"}}>
@@ -2411,7 +2636,7 @@ function PunchScreen({ user, perms, punch, chantiers, onUpdate }) {
 
 function SituationsScreen({ user, perms, situations, chantiers, onSave, onChangeStatut, onSheet }) {
   if(!perms.situations) return <div className="empty" style={{paddingTop:80}}><p style={{fontSize:14}}>Accès non disponible</p></div>;
-  const visible=user.role==="client"?situations.filter(s=>user.chIds.includes(s.chId)):situations;
+  const visible=user.role==="client"?situations.filter(s=>chIdsOf(user).includes(s.chId)):situations;
   const sfM={encaissee:{l:"Encaissée",t:"ok"},emise:{l:"Émise",t:"blue"},retard:{l:"En retard",t:"err"}};
   const totalEnc=visible.filter(s=>s.statut==="encaissee").reduce((t,s)=>t+s.mt,0);
   const totalEm=visible.filter(s=>s.statut==="emise").reduce((t,s)=>t+s.mt,0);
@@ -2470,7 +2695,7 @@ function SituationsScreen({ user, perms, situations, chantiers, onSave, onChange
 
 function IncidentsScreen({ user, incidents, chantiers, commandes, equipe, onUpdate, onEdit, onCancel, onNav, onSheet }) {
   const [filtre,setFiltre]=useState("ouvert");
-  const base=user.role==="admin"?incidents:incidents.filter(i=>user.chIds.includes(i.chId));
+  const base=user.role==="admin"?incidents:incidents.filter(i=>chIdsOf(user).includes(i.chId));
   const vis=base.filter(i=>filtre==="tous"?true:i.statut===filtre).sort((a,b)=>(a.statut==="ouvert"?0:1)-(b.statut==="ouvert"?0:1)||(a.prio||3)-(b.prio||3)||(b.ts||0)-(a.ts||0));
   const nbOuv=base.filter(i=>i.statut==="ouvert").length;
   const nbTraite=base.filter(i=>i.statut==="traite").length;
@@ -2532,7 +2757,7 @@ function IncidentsScreen({ user, incidents, chantiers, commandes, equipe, onUpda
 
 function RapportsScreen({ user, rapports, chantiers, onPrint }) {
   const [chF,setChF]=useState("tous");
-  const base=user.role==="admin"?rapports:rapports.filter(r=>user.chIds.includes(parseInt(r.chId)));
+  const base=user.role==="admin"?rapports:rapports.filter(r=>chIdsOf(user).includes(parseInt(r.chId)));
   const vis=chF==="tous"?base:base.filter(r=>parseInt(r.chId)===parseInt(chF));
   return (
     <div style={{paddingBottom:100,overflowY:"auto",height:"100%"}}>
@@ -2568,15 +2793,17 @@ function RapportsScreen({ user, rapports, chantiers, onPrint }) {
   );
 }
 
-function PlusScreen({ user, perms, data, onNav, onLogout, onUpdEq }) {
+function PlusScreen({ user, perms, data, onNav, onLogout, onUpdEq, themeId, setThemeId, onResetDemo }) {
   const { equipe, rapports, chantiers, incidents, taches, devis, commandes, heures, conges, agenda, punch, avenants, factures, plan, planId, setPlanId, hasFeat } = data;
-  const incOuv = incidents.filter(i=>i.statut==="ouvert");
-  const punchOuv = punch.filter(p=>p.statut!=="clos");
-  const avAtt = avenants.filter(a=>a.statut==="attente");
-  const hNonVal = (heures||[]).filter(h=>!h.val);
-  const retards = (factures||[]).filter(f=>f.statut==="retard");
-  const devisAtt = (devis||[]).filter(d=>d.statut==="envoye"||d.statut==="brouillon");
-  const cmdEnCours = (commandes||[]).filter(c=>c.statut==="commandee"||c.statut==="attente");
+  const scoped = (rows, key = "chId") => filterByChAccess(user, rows, key);
+  const myCh = visibleChantiers(user, chantiers);
+  const incOuv = scoped(incidents).filter(i=>i.statut==="ouvert");
+  const punchOuv = scoped(punch).filter(p=>p.statut!=="clos");
+  const avAtt = scoped(avenants).filter(a=>a.statut==="attente");
+  const hNonVal = scoped(heures||[]).filter(h=>!h.val);
+  const retards = scoped(factures||[]).filter(f=>f.statut==="retard");
+  const devisAtt = scoped(devis||[]).filter(d=>d.statut==="envoye"||d.statut==="brouillon");
+  const cmdEnCours = scoped(commandes||[]).filter(c=>c.statut==="commandee"||c.statut==="attente");
   const congesAtt = (conges||[]).filter(c=>c.statut==="attente");
   const HF = hasFeat || (()=>true); // fallback si plan absent
 
@@ -2606,8 +2833,8 @@ function PlusScreen({ user, perms, data, onNav, onLogout, onUpdEq }) {
             <div className="sec">Résumé</div>
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8}}>
               {[
-                {l:"Chantiers", v:chantiers.filter(c=>c.statut==="actif").length, c:"var(--blue)"},
-                {l:"Tâches",    v:taches.filter(t=>t.statut!=="fait").length,      c:taches.filter(t=>t.prio===1&&t.statut!=="fait").length>0?"var(--err)":"var(--t1)"},
+                {l:"Chantiers", v:myCh.filter(c=>c.statut==="actif").length, c:"var(--blue)"},
+                {l:"Tâches",    v:scoped(taches).filter(t=>t.statut!=="fait").length,      c:scoped(taches).filter(t=>t.prio===1&&t.statut!=="fait").length>0?"var(--err)":"var(--t1)"},
                 {l:"Équipe",    v:equipe.filter(m=>m.statut==="present").length+"/"+equipe.length, c:"var(--ok)"},
               ].map((m,i)=>(
                 <div key={i} className="card" style={{padding:"10px",textAlign:"center"}}>
@@ -2640,7 +2867,7 @@ function PlusScreen({ user, perms, data, onNav, onLogout, onUpdEq }) {
                 );
               }
               return (
-                <div key={item.id} className="card tap" style={{padding:"14px 16px",display:"flex",alignItems:"center",gap:14,cursor:"pointer",border:item.urgent?"1.5px solid var(--err-b)":"1px solid var(--g2)"}} onClick={()=>onNav(item.id)}>
+                <div key={item.id} role="button" tabIndex={0} aria-label={item.l} className="card tap" style={{padding:"14px 16px",display:"flex",alignItems:"center",gap:14,cursor:"pointer",border:item.urgent?"1.5px solid var(--err-b)":"1px solid var(--g2)"}} onClick={()=>onNav(item.id)} onKeyDown={e=>(e.key==="Enter"||e.key===" ")&&(e.preventDefault(),onNav(item.id))}>
                   <div style={{width:42,height:42,background:item.urgent?"var(--err-l)":"var(--blue-l)",borderRadius:"var(--r2)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:20,flexShrink:0,position:"relative"}}>
                     {item.ico}
                     {item.badge>0&&(
@@ -2757,10 +2984,47 @@ function PlusScreen({ user, perms, data, onNav, onLogout, onUpdEq }) {
                   );
                 })}
               </div>
-              <div style={{fontSize:10,color:"var(--t4)",marginTop:10,textAlign:"center"}}>Démo — en production, gérez votre abonnement via Stripe</div>
+              <div style={{fontSize:10,color:"var(--t4)",marginTop:10,textAlign:"center"}}>
+                {isStripeConfigured ? (
+                  <div style={{display:"flex",flexDirection:"column",gap:8,marginTop:8}}>
+                    <button type="button" className="btn btn-blue btn-sm btn-fw" onClick={async()=>{
+                      const url=stripeCheckoutUrl(planId);
+                      if(!url)return;
+                      const {data:{session}}=await supabase.auth.getSession();
+                      const r=await fetch(url,{headers:{Authorization:`Bearer ${session?.access_token}`}});
+                      const j=await r.json();
+                      if(j.url)window.location.href=j.url;
+                    }}>S'abonner via Stripe</button>
+                    <button type="button" className="btn btn-ghost btn-sm btn-fw" onClick={async()=>{
+                      const url=stripePortalUrl();
+                      if(!url)return;
+                      const {data:{session}}=await supabase.auth.getSession();
+                      const r=await fetch(url,{headers:{Authorization:`Bearer ${session?.access_token}`}});
+                      const j=await r.json();
+                      if(j.url)window.location.href=j.url;
+                    }}>Gérer mon abonnement</button>
+                  </div>
+                ) : "Démo — configurez Stripe (voir supabase/STRIPE.md)"}
+              </div>
             </div>
           </div>
         )}
+
+        <div>
+          <div className="sec">Apparence</div>
+          <div className="theme-grid">
+            {APP_THEMES.map(th=>(
+              <button key={th.id} type="button" className={"theme-card"+(themeId===th.id?" on":"")} onClick={()=>setThemeId&&setThemeId(th.id)}>
+                <div className="theme-swatch">
+                  <span style={{background:th.swatch[0]}}/>
+                  <span style={{background:th.swatch[1]}}/>
+                </div>
+                <div style={{fontSize:13,fontWeight:700,color:"var(--t1)"}}>{th.emoji} {th.name}</div>
+                <div style={{fontSize:11,color:"var(--t3)",marginTop:2}}>{th.desc}</div>
+              </button>
+            ))}
+          </div>
+        </div>
 
         <div>
           <div className="div" style={{marginBottom:16}}/>
@@ -2775,6 +3039,9 @@ function PlusScreen({ user, perms, data, onNav, onLogout, onUpdEq }) {
             </div>
           </div>
           <button className="btn btn-out btn-fw" onClick={onLogout}>Se déconnecter</button>
+          {onResetDemo&&user.role==="admin"&&(
+            <button className="btn btn-out btn-fw" style={{marginTop:8,borderColor:"var(--warn-b)",color:"var(--warn)"}} onClick={onResetDemo}>Réinitialiser les données démo</button>
+          )}
         </div>
       </div>
     </div>
@@ -2956,7 +3223,7 @@ function CommandesScreen({ user, perms, commandes, chantiers, fournisseurs, onAd
   const [chF,setChF]=useState("tous");
   const [q,setQ]=useState("");
   const sfM = {attente:{l:"En attente",t:"warn"},commandee:{l:"Commandée",t:"blue"},livree:{l:"Livrée",t:"ok"},annulee:{l:"Annulée",t:"err"}};
-  const base = user.role==="admin"?commandes:commandes.filter(c=>user.chIds.includes(c.chId));
+  const base = user.role==="admin"?commandes:commandes.filter(c=>chIdsOf(user).includes(c.chId));
   const visible = base
     .filter(c=>chF==="tous"||c.chId===parseInt(chF))
     .filter(c=>!q||c.objet.toLowerCase().includes(q.toLowerCase())||c.fournisseur.toLowerCase().includes(q.toLowerCase()));
@@ -3125,7 +3392,7 @@ function PlanningEqScreen({ user, perms, planningEq, chantiers, equipe, heures, 
                 const hJour   = heures ? heures.filter(h => h.nom === m.nom && h.date === iso(d)) : [];
                 const hJ      = hJour.reduce((s, h) => s + calcH(h), 0);
                 return (
-                  <div key={ji} className="card" style={{padding:"12px 14px", border:"1px solid var(--g2)", borderLeft:"3px solid " + (isToday ? "var(--blue)" : ch ? COLS[actifs.indexOf(ch) % COLS.length] : "var(--g2)"), background: isToday ? "var(--blue-l)" : "var(--w)"}}>
+                  <div key={ji} className="card" style={{padding:"12px 14px", borderTop:"1px solid var(--g2)", borderRight:"1px solid var(--g2)", borderBottom:"1px solid var(--g2)", borderLeft:"3px solid " + (isToday ? "var(--blue)" : ch ? COLS[actifs.indexOf(ch) % COLS.length] : "var(--g2)"), background: isToday ? "var(--blue-l)" : "var(--w)"}}>
                     <div style={{display:"flex", alignItems:"center", gap:10}}>
                       <div style={{width:36, textAlign:"center"}}>
                         <div style={{fontSize:10, fontWeight:700, color: isToday ? "var(--blue)" : "var(--t4)", textTransform:"uppercase"}}>{JOURS[ji]}</div>
@@ -3505,20 +3772,30 @@ function ClientsScreen({ user, clients, onSheet }) {
   );
 }
 
-function IncidentActions({ inc, commandes, equipe, user, onNav, onSheet, onUpdInc }) {
-  const [open,setOpen]=useState(inc.prio===1);
+function IncidentActions({ inc, commandes, equipe, user, onNav, onSheet, onUpdInc, fournisseurs }) {
+  const [open,setOpen]=useState(inc?.prio===1);
+  const [timerStr,setTimerStr]=useState("");
+  const annuaire=fournisseurs?.length?fournisseurs:D_FOURNISSEURS;
+
+  useEffect(()=>{
+    if(!inc||inc.statut==="traite") return;
+    const tick=()=>{
+      const openedAt=parseFrDate(inc.date)??inc.ts??Date.now();
+      const minsOpen=Math.max(0,Math.round((Date.now()-openedAt)/60000));
+      setTimerStr(minsOpen<60?minsOpen+"min":minsOpen<1440?Math.floor(minsOpen/60)+"h"+((minsOpen%60>0)?Math.round(minsOpen%60)+"min":""):Math.floor(minsOpen/1440)+"j");
+    };
+    tick();
+    const id=setInterval(tick,60000);
+    return()=>clearInterval(id);
+  },[inc?.date,inc?.ts,inc?.statut]);
+
   if(!inc||inc.statut==="traite") return null;
 
-  // Données contextuelles
   const relCmd=commandes&&inc.refCmd?commandes.find(c=>c.id===inc.refCmd):null;
-  const relFournisseur=inc.fournisseurId?D_FOURNISSEURS.find(f=>f.id===inc.fournisseurId):
-    relCmd?D_FOURNISSEURS.find(f=>f.nom.toLowerCase()===relCmd.fournisseur.toLowerCase()):null;
+  const relFournisseur=inc.fournisseurId?annuaire.find(f=>f.id===inc.fournisseurId):
+    relCmd?annuaire.find(f=>f.nom.toLowerCase()===relCmd.fournisseur.toLowerCase()):null;
   const chefContact=equipe?equipe.find(m=>m.fn&&m.fn.toLowerCase().includes("chef")):null;
   const conducteur=equipe?equipe.find(m=>m.fn&&(m.fn.toLowerCase().includes("conducteur")||m.fn.toLowerCase().includes("gérant"))):null;
-
-  // Timer d'ouverture
-  const minsOpen=inc.ts?Math.round((Date.now()-inc.ts)/60000):0;
-  const timerStr=minsOpen<60?minsOpen+"min":minsOpen<1440?Math.floor(minsOpen/60)+"h"+((minsOpen%60>0)?Math.round(minsOpen%60)+"min":""):Math.floor(minsOpen/1440)+"j";
 
   const BtnCall=({label,tel,color,icon})=>(
     <a href={"tel:"+tel.replace(/\s/g,"")} style={{display:"flex",flex:1,flexDirection:"column",alignItems:"center",gap:5,padding:"12px 6px",borderRadius:"var(--r2)",background:color+"18",border:"1.5px solid "+color+"40",cursor:"pointer",textDecoration:"none",minWidth:0}}>
@@ -3575,7 +3852,7 @@ function IncidentActions({ inc, commandes, equipe, user, onNav, onSheet, onUpdIn
           <div style={{marginBottom:12}}>
             <div style={{fontSize:11,color:"var(--t4)",textTransform:"uppercase",fontWeight:700,letterSpacing:".06em",marginBottom:6}}>Fournisseurs matériaux</div>
             <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
-              {D_FOURNISSEURS.filter(f=>f.cat==="materiaux").map(f=><BtnCall key={f.id} label={f.nom} tel={f.tel} color="var(--blue)" icon="📞"/>)}
+              {annuaire.filter(f=>f.cat==="materiaux").map(f=><BtnCall key={f.id} label={f.nom} tel={f.tel} color="var(--blue)" icon="📞"/>)}
             </div>
           </div>
         )}
@@ -3591,7 +3868,7 @@ function IncidentActions({ inc, commandes, equipe, user, onNav, onSheet, onUpdIn
         <div style={{marginBottom:12}}>
           <div style={{fontSize:11,color:"var(--t4)",textTransform:"uppercase",fontWeight:700,letterSpacing:".06em",marginBottom:6}}>Location de remplacement</div>
           <div style={{display:"flex",gap:8}}>
-            {D_FOURNISSEURS.filter(f=>f.cat==="location").map(f=><BtnCall key={f.id} label={f.nom} tel={f.tel} color="var(--ok)" icon="🏗"/>)}
+            {annuaire.filter(f=>f.cat==="location").map(f=><BtnCall key={f.id} label={f.nom} tel={f.tel} color="var(--ok)" icon="🏗"/>)}
           </div>
         </div>
         <div style={{marginBottom:12}}>
@@ -3613,7 +3890,7 @@ function IncidentActions({ inc, commandes, equipe, user, onNav, onSheet, onUpdIn
         <div style={{marginBottom:12}}>
           <div style={{fontSize:11,color:"var(--t4)",textTransform:"uppercase",fontWeight:700,letterSpacing:".06em",marginBottom:6}}>Commander immédiatement</div>
           <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
-            {D_FOURNISSEURS.filter(f=>["materiaux","plomberie","electricite"].includes(f.cat)).map(f=><BtnCall key={f.id} label={f.nom} tel={f.tel} color="var(--blue)" icon="📞"/>)}
+            {annuaire.filter(f=>["materiaux","plomberie","electricite"].includes(f.cat)).map(f=><BtnCall key={f.id} label={f.nom} tel={f.tel} color="var(--blue)" icon="📞"/>)}
           </div>
         </div>
         {onSheet&&<button className="btn btn-blue btn-sm btn-fw" onClick={()=>onSheet("commande")}>+ Créer une commande urgente</button>}
@@ -3647,13 +3924,13 @@ function IncidentActions({ inc, commandes, equipe, user, onNav, onSheet, onUpdIn
   );
 }
 
-function IncidentBanner({ incidents, chantiers, screen, chId, user, onEdit, onCancel, onTreat, onUpdInc, commandes, equipe, onNav, onSheet, perms }) {
+function IncidentBanner({ incidents, chantiers, screen, chId, user, onEdit, onCancel, onTreat, onUpdInc, commandes, equipe, fournisseurs, onNav, onSheet, perms }) {
   // Incidents ouverts pertinents pour cet écran/contexte
   const typeLabels={securite:"Sécurité",materiel:"Matériel cassé",retard:"Retard livraison",manque:"Manque matériel",autre:"Autre"};
   const typeIcos={securite:"⚠️",materiel:"🔧",retard:"📦",manque:"📋",autre:"💬"};
   let vis=incidents.filter(i=>i.statut==="ouvert");
   // filtre par rôle
-  if(user&&user.role!=="admin") vis=vis.filter(i=>user.chIds.includes(i.chId));
+  if(user&&user.role!=="admin") vis=vis.filter(i=>chIdsOf(user).includes(i.chId));
   // filtre par écran de signalement (l'incident apparaît là où il a été créé)
   if(screen) vis=vis.filter(i=>(i.screen||"home")===screen);
   // filtre par contexte chantier si fourni
@@ -3688,7 +3965,7 @@ function IncidentBanner({ incidents, chantiers, screen, chId, user, onEdit, onCa
                     {onCancel&&<button className="btn btn-out btn-xs" style={{borderColor:"var(--err-b)",color:"var(--err)"}} onClick={()=>onCancel(inc)}>Annuler</button>}
                   </div>
                 )}
-                <IncidentActions inc={inc} commandes={commandes} equipe={equipe} user={user} onNav={onNav} onSheet={onSheet} onUpdInc={onUpdInc}/>
+                <IncidentActions inc={inc} commandes={commandes} equipe={equipe} user={user} onNav={onNav} onSheet={onSheet} onUpdInc={onUpdInc} fournisseurs={fournisseurs}/>
               </div>
             </div>
           </div>
@@ -3723,186 +4000,337 @@ function UpsellScreen({ feat, onBack }) {
   );
 }
 
-function AppMobile({ user, onLogout }) {
+function AppMobile({ user, onLogout, themeId, setThemeId }) {
   const role=ROLES[user.role];
   const perms=PERMS[user.role];
+  const isLocal=!!user.isLocal||!user.isSupabase;
+  const empty=!!user.vierge;
+  const demo=d=>empty?[]:d;
+  const defaults=useMemo(()=>({
+    chantiers:demo(D_CH), taches:demo(D_TACHES), heures:demo(D_HEURES), commandes:demo(D_COMMANDES),
+    devis:demo(D_DEVIS), incidents:demo(D_INCIDENTS), factures:demo(D_FAC), clients:demo(D_CLIENTS),
+    equipe:demo(D_EQ), rapports:demo(D_RAPPORTS), messages:demo(D_MSG), avenants:demo(D_AV),
+    punch:demo(D_PUNCH), situations:demo(D_SIT), planningEq:demo(D_PLANNING_EQ), conges:demo(D_CONGES),
+    agenda:demo(D_AGENDA), notes:demo(D_NOTES), fournisseurs:demo(D_FOURNISSEURS),
+  }),[empty]);
+  const cloudPrimary=user.isSupabase&&isSupabaseConfigured;
+  const hydrated=useMemo(()=>{
+    if(cloudPrimary) return {...defaults,_persisted:false,_cloudPrimary:true};
+    return loadAppState(user,defaults);
+  },[user.id,user.email,user.vierge,cloudPrimary,defaults]);
   const [screen,setScreen]=useState("home");
   const [sheet,setSheet]=useState(null);
   const [printDoc,setPrintDoc]=useState(null);
-  const [chantiers,setChantiers]=useState([])
-  const [taches,setTaches]=useState([])
-  const [heures,setHeures]=useState([])
-  const [commandes,setCommandes]=useState([])
-  const [devis,setDevis]=useState([])
-  const [incidents,setIncidents]=useState([])
-  const [factures,setFactures]=useState([])
-  const [clients,setClients]=useState([])
-  const [incCtx,setIncCtx]=useState(null);   // contexte de signalement (screen + chId)
-  const [editInc,setEditInc]=useState(null); // incident en cours d'édition
+  const [sbReady,setSbReady]=useState(isLocal||hydrated._persisted);
+  const [sbErr,setSbErr]=useState(null);
+  const [savedAt,setSavedAt]=useState(hydrated._savedAt||null);
+  const [chantiers,setChantiers]=useState(hydrated.chantiers);
+  const [taches,setTaches]=useState(hydrated.taches);
+  const [heures,setHeures]=useState(hydrated.heures);
+  const [commandes,setCommandes]=useState(hydrated.commandes);
+  const [devis,setDevis]=useState(hydrated.devis);
+  const [incidents,setIncidents]=useState(hydrated.incidents);
+  const [factures,setFactures]=useState(hydrated.factures);
+  const [clients,setClients]=useState(hydrated.clients);
+  const [equipe,setEquipe]=useState(hydrated.equipe);
+  const [rapports,setRapports]=useState(hydrated.rapports);
+  const [messages,setMessages]=useState(hydrated.messages);
+  const [avenants,setAvenants]=useState(hydrated.avenants);
+  const [punch,setPunch]=useState(hydrated.punch);
+  const [situations,setSituations]=useState(hydrated.situations);
+  const [planningEq,setPlanningEq]=useState(hydrated.planningEq);
+  const [conges,setConges]=useState(hydrated.conges);
+  const [agenda,setAgenda]=useState(hydrated.agenda);
+  const [notes,setNotes]=useState(hydrated.notes);
+  const [fournisseurs,setFournisseurs]=useState(hydrated.fournisseurs);
+  const [planId,setPlanIdRaw]=useState(()=>localStorage.getItem("be_plan")||user.planId||"pro");
+  const setPlanId=id=>{localStorage.setItem("be_plan",id);setPlanIdRaw(id);};
+
+  useEffect(()=>{
+    if(isLocal||(hydrated._persisted&&!hydrated._cloudPrimary)) return;
+    let cancelled=false;
+    (async()=>{
+      try{
+        if(user.vierge){
+          setChantiers([]);setTaches([]);setHeures([]);setCommandes([]);setDevis([]);
+          setIncidents([]);setFactures([]);setClients([]);setEquipe([]);setRapports([]);
+          setMessages([]);setAvenants([]);setPunch([]);setSituations([]);setPlanningEq([]);
+          setConges([]);setAgenda([]);setNotes([]);setFournisseurs([]);
+        }else{
+          const data=await loadAppDataForUi();
+          if(cancelled)return;
+          setChantiers(data.chantiers);setTaches(data.taches);setHeures(data.heures);
+          setCommandes(data.commandes);setDevis(data.devis);setIncidents(data.incidents);
+          setFactures(data.factures);setClients(data.clients);setEquipe(data.equipe);
+          setRapports(data.rapports);setMessages(data.messages);setAvenants(data.avenants);
+          setPunch(data.punch);setSituations(data.situations);setPlanningEq(data.planningEq);
+          setConges(data.conges);setAgenda(data.agenda);setNotes(data.notes);
+          setFournisseurs(data.fournisseurs.length?data.fournisseurs:hydrated.fournisseurs);
+        }
+        if(user.planId)setPlanIdRaw(user.planId);
+        if(!cancelled)setSbReady(true);
+      }catch(e){
+        if(!cancelled){
+          const fallback=loadAppState(user,defaults);
+          if(fallback._persisted){
+            setChantiers(fallback.chantiers);setTaches(fallback.taches);setHeures(fallback.heures);
+            setCommandes(fallback.commandes);setDevis(fallback.devis);setIncidents(fallback.incidents);
+            setFactures(fallback.factures);setClients(fallback.clients);setEquipe(fallback.equipe);
+            setRapports(fallback.rapports);setMessages(fallback.messages);setAvenants(fallback.avenants);
+            setPunch(fallback.punch);setSituations(fallback.situations);setPlanningEq(fallback.planningEq);
+            setConges(fallback.conges);setAgenda(fallback.agenda);setNotes(fallback.notes);
+            setFournisseurs(fallback.fournisseurs);
+          }
+          setSbReady(true);
+        }
+      }
+    })();
+    return()=>{cancelled=true;};
+  },[user.id,isLocal,user.vierge,hydrated._persisted,hydrated._cloudPrimary,defaults]);
+
+  useEffect(()=>{
+    if(!sbReady)return;
+    const t=setTimeout(()=>{
+      saveAppState(user,{chantiers,taches,heures,commandes,devis,incidents,factures,clients,equipe,rapports,messages,avenants,punch,situations,planningEq,conges,agenda,notes,fournisseurs});
+      setSavedAt(Date.now());
+    },500);
+    return()=>clearTimeout(t);
+  },[sbReady,user,chantiers,taches,heures,commandes,devis,incidents,factures,clients,equipe,rapports,messages,avenants,punch,situations,planningEq,conges,agenda,notes,fournisseurs]);
+
+  const resetDemo=useCallback(()=>{
+    if(!window.confirm("Réinitialiser toutes les données de ce compte ?"))return;
+    clearAppState(user);
+    window.location.reload();
+  },[user]);
+
+  const [incCtx,setIncCtx]=useState(null);
+  const [editInc,setEditInc]=useState(null);
   const [searchQ,setSearchQ]=useState("");
   const [showSearch,setShowSearch]=useState(false);
   const [showSOS,setShowSOS]=useState(false);
-  const mapCh=c=>({...c,av:c.av??c.avancement??0,dep:c.dep??c.depenses??0,prio:c.priorite??c.prio??2,equipe:c.equipe||[]});
-  const mapT=t=>({...t,chId:Number(t.ch_id??t.chantier_id??0),resp:t.resp??t.responsable??"",prio:t.prio??t.priorite??2});
-  const mapH=h=>({...h,chId:Number(h.ch_id??0),desc:h.desc??h.description??""});
-  const mapCmd=c=>({...c,chId:Number(c.ch_id??0),mt:c.mt??0});
-  const mapD=d=>({...d,lots:Array.isArray(d.lots)?d.lots:[]});
-  const mapInc=i=>({...i,chId:Number(i.ch_id??0),desc:i.desc??i.description??"",type:i.type??i.type_inc??"autre"});
-  const mapFac=f=>({...f,chId:Number(f.ch_id??f.chantier_id??0),mt:f.mt??f.montant??0,ech:f.ech??f.echeance??"",date:f.date??f.date_emission??"",desc:f.desc??f.description??""});
-  const mapCl=c=>({...c,nbChantiers:c.nbChantiers??c.nb_chantiers??0});
+  const [ctxChId,setCtxChId]=useState(null);
+  const [sheetOpts,setSheetOpts]=useState(null);
+  const [toast,setToast]=useState("");
+  const [online,setOnline]=useState(()=>typeof navigator!=="undefined"?navigator.onLine:true);
+  const notify=useCallback(msg=>{setToast(msg);setTimeout(()=>setToast(""),2200);},[]);
+  const rememberCh=useCallback(chId=>{if(chId)saveLastChId(user,chId);},[user]);
+  const resolveDefaultChId=useCallback(()=>String(sheetOpts?.defaultChId||ctxChId||loadLastChId(user)||""),[sheetOpts,ctxChId,user]);
+  const navTo=useCallback((scr,chId)=>{if(chId)setCtxChId(chId);setScreen(scr);},[]);
+  const openSheet=useCallback((name,opts)=>{setSheetOpts(opts||null);setSheet(name);},[]);
+  const closeSheet=useCallback(()=>{setSheet(null);setSheetOpts(null);setEditInc(null);setIncCtx(null);},[]);
+
   useEffect(()=>{
-    (async ()=>{
-      const uid = (await sb.auth.getSession())?.data?.session?.user?.id || UID();
-      sb.from('chantiers').select('*').eq('user_id',uid).then(({data})=>{if(data) setChantiers(data.map(mapCh));});
-      sb.from('taches').select('*').eq('user_id',uid).then(({data})=>{if(data) setTaches(data.map(mapT));});
-      sb.from('heures').select('*').eq('user_id',uid).then(({data})=>{if(data) setHeures(data.map(mapH));});
-      sb.from('commandes').select('*').eq('user_id',uid).then(({data})=>{if(data) setCommandes(data.map(mapCmd));});
-      sb.from('devis').select('*').eq('user_id',uid).then(({data})=>{if(data) setDevis(data.map(mapD));});
-      sb.from('incidents').select('*').eq('user_id',uid).then(({data})=>{if(data) setIncidents(data.map(mapInc));});
-      sb.from('factures').select('*').eq('user_id',uid).then(({data})=>{if(data) setFactures(data.map(mapFac));});
-      sb.from('clients').select('*').eq('user_id',uid).then(({data})=>{if(data) setClients(data.map(mapCl));});
-    })();
-  },[])
-  const db=useBuildEasyData(user);
-  if(db.loading) return <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",color:"var(--t3)"}}>Chargement des données…</div>;
-  if(db.error) return <div style={{minHeight:"100vh",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:12,padding:24}}><div style={{color:"var(--err)",fontWeight:600}}>{db.error}</div><button className="btn btn-blue" onClick={db.refresh}>Réessayer</button></div>;
-  const {equipe,rapports,messages,avenants,punch,situations,planningEq,conges,agenda,notes,fournisseurs,planId,setPlanId}=db;
-  const plan=PLANS[planId];
+    const on=()=>setOnline(true);
+    const off=()=>setOnline(false);
+    window.addEventListener("online",on);
+    window.addEventListener("offline",off);
+    return()=>{window.removeEventListener("online",on);window.removeEventListener("offline",off);};
+  },[]);
+  const plan=PLANS[planId]||PLANS.pro;
   const hasFeat=f=>plan.feats.includes(f);
   const data={chantiers,taches,factures,equipe,rapports,messages,avenants,heures,punch,incidents,situations,devis,commandes,planningEq,conges,agenda,clients,notes,fournisseurs,plan,planId,setPlanId,hasFeat};
-  const {addR,sendMsg,addAv,valAv,addP,updP,onAddNote,onDelNote,onSaveSituation,onChangeSituationStatut,onEditPlanning,onValiderConge,onDelAgenda,onAddFournisseur,onEditFournisseur,onDelFournisseur,onUpdEq,onAddConge,onAddAgenda}=db;
-  const tPatch=(k,v)=>k==="chId"?{chantier_id:v}:k==="resp"?{responsable:v}:k==="prio"?{priorite:v}:{[k]:v};
-  const editT=async(id,k,v)=>{
-    const uid = (await sb.auth.getSession())?.data?.session?.user?.id || UID();
+
+  const addR=f=>{
+    if(f.chId)rememberCh(parseInt(f.chId));
+    const row={id:Date.now(),chId:parseInt(f.chId)||0,date:f.date||"",auteur:f.auteur||"",meteo:f.meteo||"",av:f.av||"",incidents:f.incidents||"RAS",presences:f.presences||[]};
+    setRapports(p=>[...p,row]);
+    if(cloud.shouldCloudSync(user)) cloud.cloudInsertRapport(row,user).catch(()=>{});
+  };
+  const sendMsg=m=>{
+    const row={id:Date.now(),chId:parseInt(m.chId),auteur:m.auteur,role:m.role,txt:m.txt,h:m.h,d:m.d};
+    setMessages(p=>[...p,row]);
+    if(cloud.shouldCloudSync(user)) cloud.cloudInsertMessage(row,user).then(created=>setMessages(p=>p.map(x=>x.id===row.id?{...x,...created}:x))).catch(()=>{});
+  };
+  const addAv=f=>{
+    const row={id:Date.now(),...f,ref:f.ref||"AV-"+String(Date.now()).slice(-3),statut:"attente",dc:f.dc||new Date().toLocaleDateString("fr-FR"),ds:"",par:""};
+    setAvenants(p=>[...p,row]);
+    if(cloud.shouldCloudSync(user)) cloud.cloudInsertAvenant(row,user).then(created=>setAvenants(p=>p.map(a=>a.id===row.id?{...a,...created}:a))).catch(()=>{});
+  };
+  const valAv=(id,s,par)=>{
+    setAvenants(p=>p.map(a=>a.id===id?{...a,statut:s,par,ds:new Date().toLocaleDateString("fr-FR")}:a));
+    if(cloud.shouldCloudSync(user)) cloud.cloudUpdateAvenant(id,s,par).catch(()=>{});
+  };
+  const addP=f=>{
+    const row={id:Date.now(),...f,ref:f.ref||"RES-"+String(Date.now()).slice(-3),statut:f.statut||"ouvert",date:f.date||new Date().toLocaleDateString("fr-FR"),clos:""};
+    setPunch(p=>[...p,row]);
+    if(cloud.shouldCloudSync(user)) cloud.cloudInsertPunch(row,user).then(created=>setPunch(p=>p.map(x=>x.id===row.id?{...x,...created}:x))).catch(()=>{});
+  };
+  const updP=(id,s)=>{
+    setPunch(p=>p.map(i=>i.id===id?{...i,statut:s,clos:s==="clos"?new Date().toLocaleDateString("fr-FR"):""}:i));
+    if(cloud.shouldCloudSync(user)) cloud.cloudUpdatePunch(id,s).catch(()=>{});
+  };
+  const onAddNote=n=>{
+    const row={id:Date.now(),chId:parseInt(n.chId),auteur:n.auteur,txt:n.txt,ts:Date.now(),date:new Date().toLocaleDateString("fr-FR")};
+    setNotes(p=>[...p,row]);
+    if(cloud.shouldCloudSync(user)) cloud.cloudInsertNote(row,user).then(created=>setNotes(p=>p.map(x=>x.id===row.id?{...x,...created}:x))).catch(()=>{});
+  };
+  const onDelNote=id=>{
+    setNotes(p=>p.filter(n=>n.id!==id));
+    if(cloud.shouldCloudSync(user)) cloud.cloudDeleteNote(id).catch(()=>{});
+  };
+  const onSaveSituation=f=>{
+    const row={id:Date.now(),chId:parseInt(f.chId),ref:f.ref||"SIT-"+String(Date.now()).slice(-3),num:f.num||1,titre:f.titre||"",av:parseInt(f.av)||0,mt:parseInt(f.mt)||0,statut:f.statut||"emise",date:f.date||"",ech:f.ech||"",desc:f.desc||""};
+    setSituations(p=>[...p,row]);
+    if(cloud.shouldCloudSync(user)) cloud.cloudInsertSituation(row,user).then(created=>setSituations(p=>p.map(x=>x.id===row.id?{...x,...created}:x))).catch(()=>{});
+  };
+  const onChangeSituationStatut=(id,s)=>{
+    setSituations(p=>p.map(x=>x.id===id?{...x,statut:s}:x));
+    if(cloud.shouldCloudSync(user)) cloud.cloudUpdateSituationStatut(id,s).catch(()=>{});
+  };
+  const onEditPlanning=(memId,ji,chId)=>{
+    setPlanningEq(p=>{
+      const next=p.map(m=>m.id!==memId?m:{...m,sem:m.sem.map((d,i)=>i===ji?{...d,chId}:d)});
+      if(cloud.shouldCloudSync(user)){
+        const m=next.find(x=>x.id===memId);
+        if(m) cloud.cloudUpdatePlanningEq(m,user).catch(()=>{});
+      }
+      return next;
+    });
+  };
+  const onValiderConge=(id,statut)=>{
+    setConges(p=>p.map(c=>c.id===id?{...c,statut}:c));
+    if(cloud.shouldCloudSync(user)) cloud.cloudUpdateConge(id,statut).catch(()=>{});
+  };
+  const onAddConge=f=>{
+    const row={id:Date.now(),...f,statut:"attente",jours:Math.max(1,f.jours||1)};
+    setConges(p=>[...p,row]);
+    if(cloud.shouldCloudSync(user)) cloud.cloudInsertConge(row,user).then(created=>setConges(p=>p.map(x=>x.id===row.id?{...x,...created}:x))).catch(()=>{});
+  };
+  const onAddAgenda=f=>{
+    const row={id:Date.now(),...f,chId:f.chId?parseInt(f.chId):null};
+    setAgenda(p=>[...p,row]);
+    if(cloud.shouldCloudSync(user)) cloud.cloudInsertAgenda(row,user).then(created=>setAgenda(p=>p.map(x=>x.id===row.id?{...x,...created}:x))).catch(()=>{});
+  };
+  const onDelAgenda=id=>{
+    setAgenda(p=>p.filter(a=>a.id!==id));
+    if(cloud.shouldCloudSync(user)) cloud.cloudDeleteAgenda(id).catch(()=>{});
+  };
+  const onAddFournisseur=f=>{
+    const row={id:Date.now(),...f};
+    setFournisseurs(p=>[...p,row]);
+    if(cloud.shouldCloudSync(user)) cloud.cloudInsertFournisseur(row,user).then(created=>setFournisseurs(p=>p.map(x=>x.id===row.id?{...x,...created}:x))).catch(()=>{});
+  };
+  const onEditFournisseur=(id,f)=>{
+    setFournisseurs(p=>p.map(x=>x.id===id?{...x,...f}:x));
+    if(cloud.shouldCloudSync(user)) cloud.cloudUpdateFournisseur(id,f).catch(()=>{});
+  };
+  const onDelFournisseur=id=>{
+    setFournisseurs(p=>p.filter(x=>x.id!==id));
+    if(cloud.shouldCloudSync(user)) cloud.cloudDeleteFournisseur(id).catch(()=>{});
+  };
+  const onUpdEq=(id,statut)=>{
+    setEquipe(p=>p.map(m=>m.id===id?{...m,statut}:m));
+    if(cloud.shouldCloudSync(user)) cloud.cloudUpdateEquipeStatut(id,statut).catch(()=>{});
+  };
+
+  const editT=(id,k,v)=>{
     setTaches(p=>p.map(t=>t.id===id?{...t,[k]:v}:t));
-    sb.from('taches').update(tPatch(k,v)).eq('id',id).eq('user_id',uid);
+    if(cloud.shouldCloudSync(user)) cloud.cloudUpdateTache(id,k,v).catch(()=>{});
   };
-  const addT=async f=>{
-    const uid = (await sb.auth.getSession())?.data?.session?.user?.id || UID();
-    const row={user_id:uid,chantier_id:parseInt(f.chId),titre:f.titre||"",responsable:f.resp||"",debut:f.debut||"",fin:f.fin||"",statut:f.statut||"planif",priorite:parseInt(f.prio)||2,duree:Math.max(1,f.duree||1)};
-    sb.from('taches').insert(row).select().single().then(({data})=>{
-      if(data) setTaches(p=>[...p,mapT(data)]);
-      else setTaches(p=>[...p,{id:Date.now(),chId:parseInt(f.chId),titre:row.titre,resp:row.responsable,debut:row.debut,fin:row.fin,statut:row.statut,prio:row.priorite,duree:row.duree}]);
-    });
+  const addT=f=>{
+    const row={id:Date.now(),chId:parseInt(f.chId),titre:f.titre,resp:f.resp||"",debut:f.debut||"",fin:f.fin||"",statut:f.statut||"planif",prio:parseInt(f.prio)||2,duree:Math.max(1,f.duree||1)};
+    setTaches(p=>[...p,row]);
+    if(cloud.shouldCloudSync(user)) cloud.cloudInsertTache(row,user).then(created=>setTaches(p=>p.map(t=>t.id===row.id?{...t,...created}:t))).catch(()=>{});
   };
-  const valH=async id=>{
-    const uid = (await sb.auth.getSession())?.data?.session?.user?.id || UID();
+  const valH=id=>{
     setHeures(p=>p.map(h=>h.id===id?{...h,val:true}:h));
-    sb.from('heures').update({val:true}).eq('id',id).eq('user_id',uid);
+    if(cloud.shouldCloudSync(user)) cloud.cloudValidateHeure(id,user.nom).catch(()=>{});
   };
-  const onAddHeure=async h=>{
-    const uid = (await sb.auth.getSession())?.data?.session?.user?.id || UID();
-    const row={user_id:uid,ch_id:parseInt(h.chId),nom:h.nom||"",date:h.date||"",arr:h.arr||"",dep:h.dep||"",pause:parseInt(h.pause)||0,description:h.desc||"",val:!!h.val,panier:!!h.panier,trajet:!!h.trajet,zone:parseInt(h.zone)||1};
-    sb.from('heures').insert(row).select().single().then(({data})=>{
-      if(data) setHeures(p=>[...p,mapH(data)]);
-      else setHeures(p=>[...p,{...h,id:Date.now(),chId:row.ch_id,val:false}]);
-    });
+  const onAddHeure=h=>{
+    const chId=parseInt(h.chId);
+    const dup=heures.some(x=>x.nom===h.nom&&x.date===h.date&&x.chId===chId);
+    if(dup&&!window.confirm("Une saisie existe déjà pour ce jour et ce chantier. Enregistrer quand même ?"))return;
+    rememberCh(chId);
+    const row={...h,id:Date.now(),chId,val:false};
+    setHeures(p=>[...p,row]);
+    if(cloud.shouldCloudSync(user)) cloud.cloudInsertHeure(row,user).then(created=>setHeures(p=>p.map(x=>x.id===row.id?{...x,...created}:x))).catch(()=>{});
   };
-  const onAddCmd=async c=>{
-    const uid = (await sb.auth.getSession())?.data?.session?.user?.id || UID();
-    const row={user_id:uid,ref:c.ref||"",ch_id:parseInt(c.chId),fournisseur:c.fournisseur||"",objet:c.objet||"",mt:parseInt(c.mt)||0,statut:c.statut||"commandee",date:c.date||"",livraison:c.livraison||"",valide_par:c.validePar||"",urgent:!!c.urgent};
-    sb.from('commandes').insert(row).select().single().then(({data})=>{
-      if(data) setCommandes(p=>[...p,mapCmd(data)]);
-      else setCommandes(p=>[...p,{id:Date.now(),...c,chId:row.ch_id,mt:row.mt}]);
-    });
+  const onAddCmd=c=>{
+    const row={id:Date.now(),...c,chId:parseInt(c.chId),mt:parseInt(c.mt)||0};
+    setCommandes(p=>[...p,row]);
+    if(cloud.shouldCloudSync(user)) cloud.cloudInsertCommande(row,user).then(created=>setCommandes(p=>p.map(x=>x.id===row.id?{...x,...created}:x))).catch(()=>{});
   };
-  const onReceptionCmd=async id=>{
-    const uid = (await sb.auth.getSession())?.data?.session?.user?.id || UID();
+  const onReceptionCmd=id=>{
     const livraison=new Date().toLocaleDateString("fr-FR");
     setCommandes(p=>p.map(c=>c.id===id?{...c,statut:"livree",livraison}:c));
-    sb.from('commandes').update({statut:"livree",livraison}).eq('id',id).eq('user_id',uid);
+    if(cloud.shouldCloudSync(user)) cloud.cloudUpdateCommande(id,{statut:"livree",livraison}).catch(()=>{});
   };
-  const onAddDevis=async d=>{
-    const uid = (await sb.auth.getSession())?.data?.session?.user?.id || UID();
-    const row={user_id:uid,ref:d.ref||"",client:d.client||"",objet:d.objet||"",date:d.date||"",validite:d.validite||"",statut:d.statut||"brouillon",lots:d.lots||[],remise:parseFloat(d.remise)||0,tva:parseFloat(d.tva)||20};
-    sb.from('devis').insert(row).select().single().then(({data})=>{
-      if(data) setDevis(p=>[...p,mapD(data)]);
-      else setDevis(p=>[...p,{id:Date.now(),...d}]);
-    });
+  const onAddDevis=d=>{
+    const row={id:Date.now(),...d,lots:d.lots||[]};
+    setDevis(p=>[...p,row]);
+    if(cloud.shouldCloudSync(user)) cloud.cloudInsertDevis(row,user).then(created=>setDevis(p=>p.map(x=>x.id===row.id?{...x,...created}:x))).catch(()=>{});
   };
-  const onChangeDevisStatut=async(id,s)=>{
-    const uid = (await sb.auth.getSession())?.data?.session?.user?.id || UID();
+  const onChangeDevisStatut=(id,s)=>{
     setDevis(p=>p.map(d=>d.id===id?{...d,statut:s}:d));
-    sb.from('devis').update({statut:s}).eq('id',id).eq('user_id',uid);
+    if(cloud.shouldCloudSync(user)) cloud.cloudUpdateDevisStatut(id,s).catch(()=>{});
   };
-  const onEditDevis=async(id,changes)=>{
-    const uid = (await sb.auth.getSession())?.data?.session?.user?.id || UID();
+  const onEditDevis=(id,changes)=>{
     setDevis(p=>p.map(d=>d.id===id?{...d,...changes}:d));
-    const patch={client:changes.client,objet:changes.objet,validite:changes.validite,tva:changes.tva,remise:changes.remise,lots:changes.lots};
-    Object.keys(patch).forEach(k=>patch[k]===undefined&&delete patch[k]);
-    sb.from('devis').update(patch).eq('id',id).eq('user_id',uid);
+    if(cloud.shouldCloudSync(user)) cloud.cloudUpdateDevis(id,changes).catch(()=>{});
   };
-  const addInc=async f=>{
-    const uid = (await sb.auth.getSession())?.data?.session?.user?.id || UID();
-    const row={user_id:uid,ch_id:parseInt(f.chId),type:f.type||"autre",description:f.desc||"",prio:parseInt(f.prio)||2,statut:f.statut||"ouvert",sig:f.sig||"",date:f.date||"",screen:f.screen||"",ts:f.ts||Date.now(),ref:f.ref||"",bloquant:!!f.bloquant};
-    sb.from('incidents').insert(row).select().single().then(({data})=>{
-      if(data) setIncidents(p=>[...p,mapInc(data)]);
-      else setIncidents(p=>[...p,{id:Date.now(),ts:Date.now(),...f,chId:row.ch_id,desc:row.description}]);
-    });
+  const addInc=f=>{
+    const row={id:Date.now(),ts:Date.now(),...f,chId:parseInt(f.chId),desc:f.desc||""};
+    setIncidents(p=>[...p,row]);
+    if(cloud.shouldCloudSync(user)) cloud.cloudInsertIncident(row,user).then(created=>setIncidents(p=>p.map(x=>x.id===row.id?{...x,...created}:x))).catch(()=>{});
   };
-  const updInc=async(id,changes)=>{
-    const uid = (await sb.auth.getSession())?.data?.session?.user?.id || UID();
+  const updInc=(id,changes)=>{
     const patch=typeof changes==="string"?{statut:changes}:changes;
     setIncidents(p=>p.map(i=>i.id===id?{...i,...patch}:i));
-    const dbPatch={};
-    if(patch.statut!=null) dbPatch.statut=patch.statut;
-    if(patch.desc!=null) dbPatch.description=patch.desc;
-    if(patch.type!=null) dbPatch.type=patch.type;
-    if(patch.prio!=null) dbPatch.prio=patch.prio;
-    if(patch.bloquant!=null) dbPatch.bloquant=patch.bloquant;
-    if(Object.keys(dbPatch).length) sb.from('incidents').update(dbPatch).eq('id',id).eq('user_id',uid);
+    if(cloud.shouldCloudSync(user)) cloud.cloudUpdateIncident(id,patch).catch(()=>{});
   };
-  const delInc=async id=>{
-    const uid = (await sb.auth.getSession())?.data?.session?.user?.id || UID();
+  const delInc=id=>{
     setIncidents(p=>p.filter(i=>i.id!==id));
-    sb.from('incidents').delete().eq('id',id).eq('user_id',uid);
+    if(cloud.shouldCloudSync(user)) cloud.cloudDeleteIncident(id).catch(()=>{});
   };
-  const onChangeFactureStatut=async(id,s)=>{
-    const uid = (await sb.auth.getSession())?.data?.session?.user?.id || UID();
+  const onChangeFactureStatut=(id,s)=>{
     setFactures(p=>p.map(f=>f.id===id?{...f,statut:s}:f));
-    sb.from('factures').update({statut:s}).eq('id',id).eq('user_id',uid);
+    if(cloud.shouldCloudSync(user)) cloud.cloudUpdateFactureStatut(id,s).catch(()=>{});
   };
-  const onAddFacture=async f=>{
-    const uid = (await sb.auth.getSession())?.data?.session?.user?.id || UID();
-    const row={id:f.id,user_id:uid,chantier_id:parseInt(f.chId),client:f.client||"",montant:parseInt(f.mt)||0,statut:f.statut||"emise",date_emission:f.date||"",echeance:f.ech||"",description:f.desc||""};
-    sb.from('factures').insert(row).select().single().then(({data})=>{
-      if(data) setFactures(p=>[...p,mapFac(data)]);
-      else setFactures(p=>[...p,{...f,chId:row.chantier_id,mt:row.montant,ech:row.echeance}]);
-    });
+  const onAddFacture=f=>{
+    const row={...f,id:f.id||"FAC-"+Date.now(),chId:parseInt(f.chId),mt:parseInt(f.mt)||0};
+    setFactures(p=>[...p,row]);
+    if(cloud.shouldCloudSync(user)) cloud.cloudInsertFacture(row,user).then(created=>setFactures(p=>p.map(x=>x.id===row.id?{...x,...created}:x))).catch(()=>{});
   };
-  const onAddClient=async c=>{
-    const uid = (await sb.auth.getSession())?.data?.session?.user?.id || UID();
-    const row={user_id:uid,nom:c.nom||"",tel:c.tel||"",email:c.email||"",adresse:c.adresse||"",statut:c.statut||"prospect",ca:parseInt(c.ca)||0,nb_chantiers:parseInt(c.nbChantiers)||0,note:c.note||""};
-    sb.from('clients').insert(row).select().single().then(({data})=>{
-      if(data) setClients(p=>[...p,mapCl(data)]);
-      else setClients(p=>[...p,{id:Date.now(),...c,ca:0,nbChantiers:0}]);
-    });
+  const onAddClient=c=>{
+    const row={id:Date.now(),...c,ca:parseInt(c.ca)||0,nbChantiers:parseInt(c.nbChantiers)||0};
+    setClients(p=>[...p,row]);
+    if(cloud.shouldCloudSync(user)) cloud.cloudInsertClient(row,user).then(created=>setClients(p=>p.map(x=>x.id===row.id?{...x,...created}:x))).catch(()=>{});
   };
-  const addC=async f=>{
-    const uid = (await sb.auth.getSession())?.data?.session?.user?.id || UID();
-    const row={nom:f.nom||"",client:f.client||"",tel:f.tel||"",corps:f.corps||"",statut:"planif",avancement:0,budget:parseInt(f.budget)||0,depenses:0,debut:f.debut||"",fin:f.fin||"",priorite:parseInt(f.prio)||2,note:f.note||"",adresse:f.adresse||"",user_id:uid};
-    sb.from('chantiers').insert(row).select().single().then(({data})=>{
-      if(data) setChantiers(p=>[...p,mapCh(data)]);
-      else setChantiers(p=>[...p,{id:Date.now(),nom:row.nom,client:row.client,tel:row.tel,corps:row.corps,statut:row.statut,av:0,budget:row.budget,dep:0,debut:row.debut,fin:row.fin,rdv:f.rdv||"",meteo:f.meteo||"—",prio:row.priorite,note:row.note,adresse:row.adresse,taux:parseInt(f.taux)||35,equipe:[]}]);
-    });
+  const addC=f=>{
+    const lim=plan.maxChantiers;
+    const actifs=chantiers.filter(c=>c.statut!=="livre").length;
+    if(lim!==Infinity&&actifs>=lim){
+      alert(`Limite atteinte : ${lim} chantier(s) actif(s) sur le plan ${plan.nom}. Passez au plan Pro.`);
+      setScreen("plus");
+      return;
+    }
+    const id=Date.now();
+    const row={id,nom:f.nom||"",client:f.client||"",tel:f.tel||"",corps:f.corps||"",statut:"actif",av:0,budget:parseInt(f.budget)||0,dep:0,debut:f.debut||"",fin:f.fin||"",rdv:f.rdv||"",meteo:f.meteo||"—",prio:parseInt(f.prio)||2,note:f.note||"",adresse:f.adresse||"",taux:parseInt(f.taux)||35,equipe:[]};
+    setChantiers(p=>[...p,row]);
+    syncEquipeChantier(setEquipe,id,f.eqIds);
+    if(cloud.shouldCloudSync(user)){
+      cloud.cloudInsertChantier(f,user).then(created=>{
+        setChantiers(p=>p.map(c=>c.id===id?{...c,...created}:c));
+        if(f.eqIds) syncEquipeChantier(setEquipe,created.id,f.eqIds);
+      }).catch(()=>{});
+    }
   };
-  const saveC=async f=>{
-    const uid = (await sb.auth.getSession())?.data?.session?.user?.id || UID();
-    setChantiers(p=>p.map(c=>c.id===f.id?{...c,...f}:c));
-    sb.from('chantiers').update({nom:f.nom,client:f.client,tel:f.tel,corps:f.corps,statut:f.statut,avancement:f.av??f.avancement??0,depenses:f.dep??f.depenses??0,budget:f.budget,debut:f.debut,fin:f.fin,priorite:f.prio??f.priorite??2,note:f.note,adresse:f.adresse}).eq('id',f.id).eq('user_id',uid);
+  const saveC=f=>{
+    const {eqIds,...patch}=f;
+    setChantiers(p=>p.map(c=>c.id===f.id?{...c,...patch}:c));
+    if(eqIds) syncEquipeChantier(setEquipe,f.id,eqIds);
+    if(cloud.shouldCloudSync(user)) cloud.cloudUpdateChantier(f.id,patch).catch(()=>{});
   };
-  const onUpdCh=async(id,k,v)=>{
-    const uid = (await sb.auth.getSession())?.data?.session?.user?.id || UID();
+  const onUpdCh=(id,k,v)=>{
     setChantiers(p=>p.map(c=>c.id===id?{...c,[k]:v}:c));
-    const patch=k==="av"?{avancement:v}:k==="dep"?{depenses:v}:k==="prio"?{priorite:v}:{[k]:v};
-    sb.from('chantiers').update(patch).eq('id',id).eq('user_id',uid);
+    if(cloud.shouldCloudSync(user)) cloud.cloudUpdateChantier(id,{[k]:v}).catch(()=>{});
   };
-  const retards=factures.filter(f=>f.statut==="retard").length;
-  const avAtt=avenants.filter(a=>a.statut==="attente"&&(user.role==="admin"||user.chIds.includes(a.chId))).length;
-  const punchOuv=punch.filter(p=>p.statut!=="clos"&&(user.role==="admin"||user.chIds.includes(p.chId))).length;
-  const incOuv=incidents.filter(i=>i.statut==="ouvert").length;
-  const tUrgent=taches.filter(t=>(user.role==="admin"||user.chIds.includes(t.chId))&&t.statut!=="fait"&&(t.prio===1||isRetard(t.fin))).length;
-  const msgCount=messages.filter(m=>m.role!==user.role).length>0?1:0;
+  const retards=perms.montants?filterByChAccess(user,factures).filter(f=>f.statut==="retard").length:0;
+  const avAtt=filterByChAccess(user,avenants).filter(a=>a.statut==="attente").length;
+  const punchOuv=filterByChAccess(user,punch).filter(p=>p.statut!=="clos").length;
+  const incOuv=perms.incidents?filterByChAccess(user,incidents).filter(i=>i.statut==="ouvert").length:0;
+  const tUrgent=filterByChAccess(user,taches).filter(t=>t.statut!=="fait"&&(t.prio===1||isRetard(t.fin))).length;
+  const msgCount=filterByChAccess(user,messages).some(m=>m.role!==user.role)?1:0;
   const TABS=[
     {id:"home",    l:"Accueil",  ico:<IcoHome/>},
     perms.chantiers&&{id:"chantiers",l:"Chantiers",ico:<IcoBuild/>},
@@ -3912,17 +4340,17 @@ function AppMobile({ user, onLogout }) {
   ].filter(Boolean);
   const renderFAB=()=>{
     if(screen==="chat") return null;
-    const act={chantiers:perms.creerCh?"chantier":null,taches:perms.creerT?"tache":null,home:perms.rapport?"rapport":null,devis:perms.montants?"devis":null,commandes:perms.creerCmd?"commande":null,conges:perms.equipe?"conge":null,agenda:"agenda",clients:"client",finances:perms.montants?"facture":null,heures:"heure"}[screen];
+    const act={chantiers:perms.creerCh?"chantier":null,taches:perms.creerT?"tache":null,home:perms.rapport?"rapport":null,devis:perms.montants?"devis":null,commandes:perms.creerCmd?"commande":null,conges:perms.equipe?"conge":null,agenda:"agenda",clients:"client",finances:perms.montants?"facture":null,heures:"heure",avenants:perms.creerAv?"avenant":null,punch:perms.gPunch?"punch":null}[screen];
     // Libellé contextuel de l'incident selon l'écran
     const incLabels={chantiers:"Incident chantier",taches:"Bloquer une tâche",heures:"Signaler un retard",punch:"Nouvelle réserve",commandes:"Problème livraison",planningEq:"Absence imprévue"};
     const incLabel=incLabels[screen]||"Incident";
     return (
       <div className="fab">
         {perms.incidents&&<>
-          <button className="fab-r" onClick={()=>{setIncCtx({screen});setEditInc(null);setSheet("incident");}} title={incLabel}>⚠</button>
+          <button className="fab-r" onClick={()=>{setIncCtx({screen,chId:ctxChId||undefined});setEditInc(null);openSheet("incident");}} title={incLabel}>⚠</button>
           <div className="fab-lbl">{incLabel}</div>
         </>}
-        {act&&<button className="fab-b" onClick={()=>setSheet(act)} title="Créer"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></button>}
+        {act&&<button className="fab-b" onClick={()=>openSheet(act,ctxChId?{defaultChId:ctxChId}:null)} title="Créer"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></button>}
       </div>
     );
   };
@@ -3934,49 +4362,68 @@ function AppMobile({ user, onLogout }) {
       return <UpsellScreen feat={reqFeat} onBack={()=>setScreen("plus")}/>;
     }
     switch(screen){
-      case "home":       return <HomeScreen      user={user} perms={perms} data={data} onNav={setScreen} onSheet={setSheet} onUpdCh={onUpdCh}/>;
-      case "chantiers":  return <ChantiersScreen  user={user} perms={perms} chantiers={chantiers} taches={taches} equipe={equipe} heures={heures} commandes={commandes} notes={notes} onSave={saveC} onNav={setScreen} onAddNote={onAddNote} onDelNote={onDelNote}/>;
-      case "taches":     return <TachesScreen     user={user} perms={perms} taches={taches} chantiers={chantiers} equipe={equipe} onEditT={editT} onSheet={setSheet}/>;
-      case "finances":   return <FinancesScreen   user={user} perms={perms} factures={factures} chantiers={chantiers} heures={heures} equipe={equipe} commandes={commandes} onSheet={setSheet} onChangeStatut={onChangeFactureStatut} onPrint={setPrintDoc}/>;
-      case "chat":       return <ChatScreen       user={user} perms={perms} messages={messages} chantiers={chantiers} onSend={sendMsg} onSheet={setSheet}/>;
-      case "avenants":   return <AvenantsScreen   user={user} perms={perms} avenants={avenants} chantiers={chantiers} onValider={valAv}/>;
-      case "heures":     return <HeuresScreen     user={user} perms={perms} heures={heures} chantiers={chantiers} equipe={equipe} onValider={valH} onSheet={setSheet} onPrint={setPrintDoc}/>;
+      case "home":       return <HomeScreen      user={user} perms={perms} data={data} onNav={navTo} onSheet={openSheet} onUpdCh={onUpdCh} onNotify={notify}/>;
+      case "chantiers":  return <ChantiersScreen  user={user} perms={perms} chantiers={chantiers} taches={taches} equipe={equipe} heures={heures} commandes={commandes} notes={notes} onSave={saveC} onNav={navTo} onAddNote={onAddNote} onDelNote={onDelNote} onNotify={notify}/>;
+      case "taches":     return <TachesScreen     user={user} perms={perms} taches={taches} chantiers={chantiers} equipe={equipe} onEditT={editT} onSheet={openSheet} initialChFilter={ctxChId}/>;
+      case "finances":   return <FinancesScreen   user={user} perms={perms} factures={factures} chantiers={chantiers} heures={heures} equipe={equipe} commandes={commandes} onSheet={openSheet} onChangeStatut={onChangeFactureStatut} onPrint={setPrintDoc}/>;
+      case "chat":       return <ChatScreen       user={user} perms={perms} messages={messages} chantiers={chantiers} onSend={sendMsg} onSheet={openSheet} initialChId={ctxChId}/>;
+      case "avenants":   return <AvenantsScreen   user={user} perms={perms} avenants={avenants} chantiers={chantiers} onValider={valAv} onSheet={openSheet}/>;
+      case "heures":     return <HeuresScreen     user={user} perms={perms} heures={heures} chantiers={chantiers} equipe={equipe} onValider={valH} onSheet={openSheet} onPrint={setPrintDoc}/>;
       case "punch":      return <PunchScreen      user={user} perms={perms} punch={punch} chantiers={chantiers} onUpdate={updP}/>;
-      case "situations": return <SituationsScreen user={user} perms={perms} situations={situations} chantiers={chantiers} onSave={onSaveSituation} onChangeStatut={onChangeSituationStatut} onSheet={setSheet}/>;
-      case "incidents":  return <IncidentsScreen  user={user} incidents={incidents} chantiers={chantiers} commandes={commandes} equipe={equipe} onUpdate={updInc} onEdit={inc=>{setEditInc(inc);setIncCtx(null);setSheet("incident");}} onCancel={inc=>delInc(inc.id)} onNav={setScreen} onSheet={setSheet}/>;
+      case "situations": return <SituationsScreen user={user} perms={perms} situations={situations} chantiers={chantiers} onSave={onSaveSituation} onChangeStatut={onChangeSituationStatut} onSheet={openSheet}/>;
+      case "incidents":  return <IncidentsScreen  user={user} incidents={incidents} chantiers={chantiers} commandes={commandes} equipe={equipe} onUpdate={updInc} onEdit={inc=>{setEditInc(inc);setIncCtx(null);openSheet("incident");}} onCancel={inc=>delInc(inc.id)} onNav={navTo} onSheet={openSheet}/>;
       case "rapports":   return <RapportsScreen   user={user} rapports={rapports} chantiers={chantiers} onPrint={setPrintDoc}/>;
-      case "devis":      return <DevisScreen      user={user} perms={perms} devis={devis} chantiers={chantiers} onAddDevis={onAddDevis} onConvertDevis={d=>{const st=d.lots.reduce((s,l)=>s+l.lignes.reduce((ss,li)=>ss+(li.qte||0)*(li.pu||0),0),0);addC({nom:d.objet,client:d.client,budget:st,prio:2});setScreen("chantiers");}} onChangeStatut={onChangeDevisStatut} onEditDevis={onEditDevis} onPrint={setPrintDoc}/>;
-      case "commandes":  return <CommandesScreen  user={user} perms={perms} commandes={commandes} chantiers={chantiers} fournisseurs={fournisseurs} onAddCmd={onAddCmd} onReception={onReceptionCmd} onSheet={setSheet}/>;
+      case "devis":      return <DevisScreen      user={user} perms={perms} devis={devis} chantiers={chantiers} onAddDevis={onAddDevis} onConvertDevis={d=>{const st=d.lots.reduce((s,l)=>s+l.lignes.reduce((ss,li)=>ss+(li.qte||0)*(li.pu||0),0),0);addC({nom:d.objet,client:d.client,budget:st,prio:2});navTo("chantiers");}} onChangeStatut={onChangeDevisStatut} onEditDevis={onEditDevis} onPrint={setPrintDoc}/>;
+      case "commandes":  return <CommandesScreen  user={user} perms={perms} commandes={commandes} chantiers={chantiers} fournisseurs={fournisseurs} onAddCmd={onAddCmd} onReception={onReceptionCmd} onSheet={openSheet}/>;
       case "planningEq": return <PlanningEqScreen user={user} perms={perms} planningEq={planningEq} chantiers={chantiers} equipe={equipe} heures={heures} onEdit={onEditPlanning} onValiderH={valH}/>;
-      case "conges":     return <CongesScreen     user={user} perms={perms} conges={conges} onValider={onValiderConge} onSheet={setSheet}/>;
-      case "agenda":     return <AgendaScreen     user={user} agenda={agenda} chantiers={chantiers} equipe={equipe} onSheet={setSheet} onDel={onDelAgenda}/>;
-      case "clients":    return <ClientsScreen    user={user} clients={clients} onSheet={setSheet}/>;
+      case "conges":     return <CongesScreen     user={user} perms={perms} conges={conges} onValider={onValiderConge} onSheet={openSheet}/>;
+      case "agenda":     return <AgendaScreen     user={user} agenda={agenda} chantiers={chantiers} equipe={equipe} onSheet={openSheet} onDel={onDelAgenda}/>;
+      case "clients":    return <ClientsScreen    user={user} clients={clients} onSheet={openSheet}/>;
       case "fournisseurs":return <FournisseursScreen user={user} fournisseurs={fournisseurs} commandes={commandes} onAdd={onAddFournisseur} onEdit={onEditFournisseur} onDel={onDelFournisseur}/>;
-      case "plus":       return <PlusScreen       user={user} perms={perms} data={data} onNav={setScreen} onLogout={onLogout} onUpdEq={onUpdEq}/>;
+      case "plus":       return <PlusScreen       user={user} perms={perms} data={data} onNav={setScreen} onLogout={onLogout} onUpdEq={onUpdEq} themeId={themeId} setThemeId={setThemeId} onResetDemo={resetDemo}/>;
       default: return null;
     }
   };
   const searchResults=searchQ.trim().length>1?(()=>{
     const q=searchQ.toLowerCase();
     const r=[];
-    chantiers.filter(c=>(c.nom+c.client+c.adresse).toLowerCase().includes(q)).forEach(c=>r.push({type:"Chantier",label:c.nom,sub:c.client,nav:"chantiers"}));
-    taches.filter(t=>(t.titre+t.resp).toLowerCase().includes(q)).forEach(t=>{const ch=chantiers.find(c=>c.id===t.chId);r.push({type:"Tâche",label:t.titre,sub:(ch?.nom||"")+" · "+t.resp,nav:"taches"});});
-    equipe.filter(m=>(m.nom+m.fn+m.tel).toLowerCase().includes(q)).forEach(m=>r.push({type:"Équipe",label:m.nom,sub:m.fn+" · "+m.tel,nav:"plus"}));
-    (factures||[]).filter(f=>(f.id+f.client+f.desc).toLowerCase().includes(q)).forEach(f=>r.push({type:"Facture",label:f.id+" — "+EUR(f.mt),sub:f.client,nav:"finances"}));
-    (devis||[]).filter(d=>(d.ref+d.client+d.objet).toLowerCase().includes(q)).forEach(d=>r.push({type:"Devis",label:d.ref+" — "+d.objet,sub:d.client,nav:"devis"}));
-    clients.filter(c=>(c.nom+c.email+c.tel+(c.note||"")).toLowerCase().includes(q)).forEach(c=>r.push({type:"Client",label:c.nom,sub:c.tel,nav:"clients"}));
+    const myCh=visibleChantiers(user,chantiers);
+    myCh.filter(c=>(c.nom+c.client+c.adresse).toLowerCase().includes(q)).forEach(c=>r.push({type:"Chantier",label:c.nom,sub:c.client,nav:"chantiers",chId:c.id}));
+    filterByChAccess(user,taches).filter(t=>(t.titre+t.resp).toLowerCase().includes(q)).forEach(t=>{const ch=chantiers.find(c=>c.id===t.chId);r.push({type:"Tâche",label:t.titre,sub:(ch?.nom||"")+" · "+t.resp,nav:"taches",chId:t.chId});});
+    if(isAdmin(user)) equipe.filter(m=>(m.nom+m.fn+m.tel).toLowerCase().includes(q)).forEach(m=>r.push({type:"Équipe",label:m.nom,sub:m.fn+" · "+m.tel,nav:"plus"}));
+    filterByChAccess(user,factures||[]).filter(f=>(f.id+f.client+(f.desc||"")).toLowerCase().includes(q)).forEach(f=>r.push({type:"Facture",label:f.id+" — "+EUR(f.mt),sub:f.client,nav:"finances",chId:f.chId}));
+    filterByChAccess(user,devis||[]).filter(d=>(d.ref+d.client+d.objet).toLowerCase().includes(q)).forEach(d=>r.push({type:"Devis",label:d.ref+" — "+d.objet,sub:d.client,nav:"devis"}));
+    filterByChAccess(user,punch||[]).filter(p=>(p.titre+p.ref+(p.desc||"")).toLowerCase().includes(q)).forEach(p=>{const ch=chantiers.find(c=>c.id===p.chId);r.push({type:"Réserve",label:p.titre,sub:(p.ref||"")+" · "+(ch?.nom||""),nav:"punch",chId:p.chId});});
+    filterByChAccess(user,incidents||[]).filter(i=>(i.ref+i.desc).toLowerCase().includes(q)).forEach(i=>{const ch=chantiers.find(c=>c.id===i.chId);r.push({type:"Incident",label:i.ref,sub:i.desc.slice(0,40),nav:"incidents",chId:i.chId});});
+    filterByChAccess(user,notes||[]).filter(n=>n.txt.toLowerCase().includes(q)).forEach(n=>{const ch=chantiers.find(c=>c.id===n.chId);r.push({type:"Note",label:n.txt.slice(0,50),sub:(ch?.nom||"")+" · "+n.auteur,nav:"chantiers",chId:n.chId});});
+    filterByChAccess(user,commandes||[]).filter(c=>(c.ref+c.objet+c.fournisseur).toLowerCase().includes(q)).forEach(c=>{const ch=chantiers.find(x=>x.id===c.chId);r.push({type:"Commande",label:c.ref+" — "+c.objet,sub:c.fournisseur+" · "+(ch?.nom||""),nav:"commandes",chId:c.chId});});
+    if(isAdmin(user)) clients.filter(c=>(c.nom+c.email+c.tel+(c.note||"")).toLowerCase().includes(q)).forEach(c=>r.push({type:"Client",label:c.nom,sub:c.tel,nav:"clients"}));
     return r.slice(0,12);
   })():[];
+
+  if(!sbReady) return (
+    <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:"var(--bg)",flexDirection:"column",gap:12}}>
+      <div style={{fontSize:15,fontWeight:700,color:"var(--t2)"}}>Chargement des données…</div>
+    </div>
+  );
+  if(sbErr) return (
+    <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:"var(--bg)",flexDirection:"column",gap:12,padding:24,textAlign:"center"}}>
+      <div style={{fontSize:15,fontWeight:700,color:"var(--err)"}}>Impossible de charger Supabase</div>
+      <div style={{fontSize:13,color:"var(--t3)",maxWidth:320}}>{sbErr}</div>
+      <button className="btn-p" onClick={onLogout}>Retour connexion</button>
+    </div>
+  );
 
   return (
     <div style={{height:"100vh",display:"flex",flexDirection:"column",overflow:"hidden",background:"var(--bg)"}}>
       <div style={{background:"var(--w)",borderBottom:"1px solid var(--g2)",paddingTop:"var(--st)",paddingLeft:20,paddingRight:20,paddingBottom:12,flexShrink:0,boxShadow:"0 1px 4px rgba(0,0,0,.05)"}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",paddingTop:14}}>
           <div style={{display:"flex",alignItems:"center",gap:10}}>
-            <div style={{width:32,height:32,background:"var(--blue)",borderRadius:9,display:"flex",alignItems:"center",justifyContent:"center"}}>
+            <div style={{width:32,height:32,background:"var(--hdr-ico)",borderRadius:9,display:"flex",alignItems:"center",justifyContent:"center"}}>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5" strokeLinecap="round"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
             </div>
             <span style={{fontSize:16,fontWeight:800,letterSpacing:"-.02em",color:"var(--t1)"}}>BuildEasy</span>
+            <span title={online?(savedAt?"En ligne · sauvegardé":"En ligne"):"Hors ligne — données locales"} style={{width:8,height:8,borderRadius:"50%",background:online?"var(--ok)":"var(--warn)",marginLeft:6,flexShrink:0,display:"inline-block"}}/>
           </div>
           <div style={{display:"flex",alignItems:"center",gap:7}}>
             <button onClick={()=>setShowSearch(true)} style={{width:32,height:32,borderRadius:8,background:"var(--g1)",border:"1px solid var(--g2)",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center"}}>
@@ -3996,13 +4443,14 @@ function AppMobile({ user, onLogout }) {
               chantiers={chantiers}
               commandes={commandes}
               equipe={equipe}
+              fournisseurs={fournisseurs}
               screen={screen}
               user={user}
               perms={perms}
-              onNav={setScreen}
-              onSheet={setSheet}
+              onNav={navTo}
+              onSheet={openSheet}
               onTreat={id=>updInc(id,"traite")}
-              onEdit={inc=>{setEditInc(inc);setIncCtx(null);setSheet("incident");}}
+              onEdit={inc=>{setEditInc(inc);setIncCtx(null);openSheet("incident");}}
               onCancel={inc=>delInc(inc.id)}
               onUpdInc={updInc}
             />
@@ -4013,7 +4461,7 @@ function AppMobile({ user, onLogout }) {
       {renderFAB()}
       <div className="nav">
         {TABS.map(tab=>(
-          <div key={tab.id} className={"nt "+(screen===tab.id?"nt-on":"nt-off")} onClick={()=>setScreen(tab.id)}>
+          <div key={tab.id} role="button" tabIndex={0} aria-label={tab.l} aria-current={screen===tab.id?"page":undefined} className={"nt "+(screen===tab.id?"nt-on":"nt-off")} onClick={()=>setScreen(tab.id)} onKeyDown={e=>(e.key==="Enter"||e.key===" ")&&(e.preventDefault(),setScreen(tab.id))}>
             <div className="nt-ico">{tab.ico}</div>
             <div className="nt-lbl">{tab.l}</div>
             {(tab.badge||0)>0&&<div className="nt-dot"/>}
@@ -4066,7 +4514,7 @@ function AppMobile({ user, onLogout }) {
             {/* Fournisseurs par catégorie */}
             <div className="sec">Fournisseurs &amp; prestataires</div>
             {[{cat:"materiaux",l:"Matériaux"},{cat:"plomberie",l:"Plomberie"},{cat:"electricite",l:"Électricité"},{cat:"location",l:"Location matériel"},{cat:"enduits",l:"Enduits &amp; façade"}].map(g=>{
-              const items=D_FOURNISSEURS.filter(f=>f.cat===g.cat);
+              const items=fournisseurs.filter(f=>f.cat===g.cat);
               if(!items.length) return null;
               return (
                 <div key={g.cat} style={{marginBottom:12}}>
@@ -4098,7 +4546,7 @@ function AppMobile({ user, onLogout }) {
             {searchQ.trim().length<2&&<div style={{textAlign:"center",padding:"20px 0",color:"var(--t4)",fontSize:13}}>Tapez au moins 2 caractères</div>}
             {searchQ.trim().length>=2&&searchResults.length===0&&<div style={{textAlign:"center",padding:"20px 0",color:"var(--t4)",fontSize:13}}>Aucun résultat pour "{searchQ}"</div>}
             {searchResults.map((r,i)=>(
-              <div key={i} className="card tap" style={{padding:"12px 14px",marginBottom:6,cursor:"pointer"}} onClick={()=>{setScreen(r.nav);setShowSearch(false);setSearchQ("");}}>
+              <div key={i} className="card tap" style={{padding:"12px 14px",marginBottom:6,cursor:"pointer"}} onClick={()=>{if(r.chId)navTo(r.nav,r.chId);else setScreen(r.nav);setShowSearch(false);setSearchQ("");}}>
                 <div className="row">
                   <div style={{flex:1}}>
                     <div style={{fontSize:10,fontWeight:700,color:"var(--blue)",textTransform:"uppercase",letterSpacing:".06em",marginBottom:3}}>{r.type}</div>
@@ -4113,20 +4561,21 @@ function AppMobile({ user, onLogout }) {
           </div>
         </div>
       )}
-      {sheet==="rapport"  &&perms.rapport    &&<FRapport  chantiers={chantiers} equipe={equipe} user={user} onClose={()=>setSheet(null)} onSave={addR}/>}
-      {sheet==="chantier" &&perms.creerCh    &&<FChantier equipe={equipe} onClose={()=>setSheet(null)} onSave={addC}/>}
-      {sheet==="tache"    &&perms.creerT     &&<FTache    chantiers={chantiers} equipe={equipe} onClose={()=>setSheet(null)} onSave={addT}/>}
-      {sheet==="avenant"  &&perms.creerAv    &&<FAvenant  chantiers={chantiers} onClose={()=>setSheet(null)} onSave={addAv}/>}
-      {sheet==="punch"    &&perms.gPunch     &&<FPunch    chantiers={chantiers} equipe={equipe} user={user} onClose={()=>setSheet(null)} onSave={addP}/>}
-      {sheet==="incident" &&perms.incidents  &&<FIncident chantiers={chantiers} user={user} ctx={incCtx} edit={editInc} onClose={()=>{setSheet(null);setEditInc(null);setIncCtx(null);}} onSave={addInc} onUpdate={updInc}/>}
-      {sheet==="devis"    &&perms.montants   &&<FDevis   onClose={()=>setSheet(null)} onSave={onAddDevis}/>}
-      {sheet==="commande" &&perms.montants   &&<FCommande chantiers={chantiers} onClose={()=>setSheet(null)} onSave={onAddCmd}/>}
-      {sheet==="conge"    &&perms.equipe     &&<FConge   equipe={equipe} user={user} onClose={()=>setSheet(null)} onSave={onAddConge}/>}
-      {sheet==="agenda"                      &&<FAgenda  chantiers={chantiers} equipe={equipe} onClose={()=>setSheet(null)} onSave={onAddAgenda}/>}
-      {sheet==="client"                      &&<FClient  onClose={()=>setSheet(null)} onSave={onAddClient}/>}
-      {sheet==="facture"   &&perms.montants   &&<FFacture chantiers={chantiers} devis={devis} onClose={()=>setSheet(null)} onSave={onAddFacture}/>}
-      {sheet==="situation" &&perms.montants   &&<FSituation chantiers={chantiers} onClose={()=>setSheet(null)} onSave={onSaveSituation}/>}
-      {sheet==="heure"     &&perms.heures     &&<FHeures chantiers={chantiers} equipe={equipe} user={user} onClose={()=>setSheet(null)} onSave={onAddHeure}/>}
+      {sheet==="rapport"  &&perms.rapport    &&<FRapport  chantiers={chantiers} equipe={equipe} user={user} defaultChId={resolveDefaultChId()} onRememberCh={rememberCh} onClose={closeSheet} onSave={addR}/>}
+      {sheet==="chantier" &&perms.creerCh    &&<FChantier equipe={equipe} onClose={closeSheet} onSave={addC}/>}
+      {sheet==="tache"    &&perms.creerT     &&<FTache    chantiers={chantiers} equipe={equipe} onClose={closeSheet} onSave={addT}/>}
+      {sheet==="avenant"  &&perms.creerAv    &&<FAvenant  chantiers={chantiers} onClose={closeSheet} onSave={addAv}/>}
+      {sheet==="punch"    &&perms.gPunch     &&<FPunch    chantiers={chantiers} equipe={equipe} user={user} defaultChId={resolveDefaultChId()} onRememberCh={rememberCh} onClose={closeSheet} onSave={addP}/>}
+      {sheet==="incident" &&perms.incidents  &&<FIncident chantiers={chantiers} user={user} ctx={incCtx} edit={editInc} onClose={closeSheet} onSave={addInc} onUpdate={updInc}/>}
+      {sheet==="devis"    &&perms.montants   &&<FDevis   onClose={closeSheet} onSave={onAddDevis}/>}
+      {sheet==="commande" &&perms.montants   &&<FCommande chantiers={chantiers} fournisseurs={fournisseurs} defaultChId={resolveDefaultChId()} onRememberCh={rememberCh} onClose={closeSheet} onSave={onAddCmd}/>}
+      {sheet==="conge"    &&perms.equipe     &&<FConge   equipe={equipe} user={user} onClose={closeSheet} onSave={onAddConge}/>}
+      {sheet==="agenda"                      &&<FAgenda  chantiers={chantiers} equipe={equipe} onClose={closeSheet} onSave={onAddAgenda}/>}
+      {sheet==="client"                      &&<FClient  onClose={closeSheet} onSave={onAddClient}/>}
+      {sheet==="facture"   &&perms.montants   &&<FFacture chantiers={chantiers} devis={devis} onClose={closeSheet} onSave={onAddFacture}/>}
+      {sheet==="situation" &&perms.montants   &&<FSituation chantiers={chantiers} onClose={closeSheet} onSave={onSaveSituation}/>}
+      {sheet==="heure"     &&perms.heures     &&<FHeures chantiers={chantiers} equipe={equipe} user={user} heures={heures} defaultChId={resolveDefaultChId()} onRememberCh={rememberCh} onClose={closeSheet} onSave={onAddHeure}/>}
+      {toast&&<div style={{position:"fixed",bottom:"calc(80px + var(--sb))",left:"50%",transform:"translateX(-50%)",padding:"10px 18px",background:"var(--t1)",color:"#fff",borderRadius:"var(--r2)",fontSize:13,fontWeight:600,zIndex:9999,boxShadow:"var(--sh-lg)",pointerEvents:"none"}}>{toast}</div>}
     </div>
   );
 }
@@ -4140,36 +4589,34 @@ const IcoMore=()=><Ico c={<><circle cx="12" cy="12" r="1"/><circle cx="19" cy="1
 
 export default function App() {
   const [user,setUser]=useState(null);
+  const [themeId,setThemeId]=useState(()=>localStorage.getItem("be_theme")||"ocean");
+
+  useEffect(()=>{
+    document.documentElement.setAttribute("data-theme",themeId);
+    localStorage.setItem("be_theme",themeId);
+  },[themeId]);
 
   useEffect(() => {
-    sb.auth.getSession().then(({ data }) => {
-      if (data?.session?.user) {
-        const u = data.session.user;
-        setUser({
-          id: u.id,
-          nom: u.user_metadata?.nom || u.email.split('@')[0],
-          role: u.user_metadata?.role || 'admin',
-          email: u.email,
-          chIds: [],
-          vierge: false
-        });
-      }
+    if (!isSupabaseConfigured) return;
+    getSessionUser().then((u) => { if (u) setUser(u); });
+    return onAuthChange((u) => {
+      setUser((prev) => {
+        if (u) return u;
+        if (prev?.isSupabase) return null;
+        return prev;
+      });
     });
-    const { data: listener } = sb.auth.onAuthStateChange((event, session) => {
-      if (event === 'SIGNED_OUT') setUser(null);
-    });
-    return () => listener?.subscription?.unsubscribe();
   }, []);
 
   const handleLogout=async()=>{
-    await sb.auth.signOut();
+    if (user?.isSupabase) await authSignOut().catch(() => {});
     setUser(null);
   };
 
   return (
     <>
       <style>{CSS}</style>
-      {!user?<LoginScreen onLogin={setUser}/>:<AppMobile key={user.id} user={user} onLogout={handleLogout}/>}
+      {!user?<LoginScreen onLogin={setUser}/>:<AppMobile key={user.id} user={user} onLogout={handleLogout} themeId={themeId} setThemeId={setThemeId}/>}
     </>
   );
 }

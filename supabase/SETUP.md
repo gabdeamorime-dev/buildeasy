@@ -1,70 +1,64 @@
 # Configuration Supabase — BuildEasy
 
-## 1. Exécuter le schéma SQL
+## 1. Schéma SQL (ordre d'exécution)
 
-1. Ouvrez [Supabase Dashboard](https://supabase.com/dashboard/project/nvgemgfeaxqocrmzdmzy/sql/new)
-2. Collez le contenu de **`schema.sql`**
-3. Cliquez **Run**
+Dans [SQL Editor](https://supabase.com/dashboard/project/nvgemgfeaxqocrmzdmzy/sql/new) :
 
-Cela crée les tables, le RLS (isolation par organisation) et le trigger d’inscription.
+1. `schema.sql` — tables de base
+2. `auth.sql` — trigger profil à l'inscription Auth
+3. `saas.sql` — multi-tenant + RLS
+4. `migrate-to-org.sql` — colonnes `org_id` sur les tables métier
+5. `signup.sql` — inscription SaaS (`finish_signup`, billing Stripe)
 
-## 2. Variables d’environnement (Vite)
-
-Le fichier **`app/.env`** est déjà configuré avec :
+## 2. Variables d'environnement (Vite)
 
 ```env
 VITE_SUPABASE_URL=https://nvgemgfeaxqocrmzdmzy.supabase.co
 VITE_SUPABASE_ANON_KEY=votre_clé_publishable
+VITE_DEMO_MODE=false
 ```
 
-> En Vite, utilisez le préfixe **`VITE_`** (pas seulement `NEXT_PUBLIC_`).
+Redémarrez après modification : `npm run dev`
 
-Redémarrez le serveur après modification : `npm run dev`
+## 3. Inscription utilisateur (dans l'app)
 
-## 3. Créer les utilisateurs (Auth)
+L'écran de connexion propose **Créer un compte** :
 
-Dans **Authentication → Users → Add user**, créez par exemple :
+- Nom de l'entreprise
+- Votre nom
+- Email + mot de passe (8 caractères min.)
 
-| Email | Mot de passe | User metadata (JSON) |
-|-------|--------------|----------------------|
-| admin@buildeasy.eu | admin123 | `{"nom":"Jean Dupont","role":"admin","vierge":false}` |
-| chef@buildeasy.eu | chef123 | `{"nom":"Marc Lefebvre","role":"chef","vierge":false,"ch_ids":[1,5]}` |
+À l'inscription :
 
-À la première connexion, un **profil** et une **organisation** sont créés automatiquement.
+1. Supabase Auth crée l'utilisateur
+2. Le trigger `handle_new_user` crée le profil (rôle `admin`, compte vierge)
+3. `finish_signup` crée l'organisation et lie le profil
+4. Les données sont synchronisées vers Supabase (chantiers, devis, etc.)
 
-### Équipe sur la même organisation
+> Si la confirmation email est activée dans Supabase Auth, l'utilisateur doit confirmer avant de se connecter.
 
-Pour que chef / employé / client voient les **mêmes chantiers** :
+### Désactiver la confirmation email (dev / MVP)
 
-1. Connectez-vous une fois avec le compte **admin** (notez l’`org_id` dans **Table Editor → profiles**)
-2. Pour les autres comptes, après création Auth, mettez à jour leur ligne dans **`profiles`** :
+**Authentication → Providers → Email** → désactiver « Confirm email ».
 
-```sql
-update public.profiles
-set org_id = 'UUID-ORG-DU-GERANT',
-    role = 'chef',
-    ch_ids = '{1,5}'
-where email = 'chef@buildeasy.eu';
-```
+## 4. Comptes démo (optionnel)
 
-## 4. Données de démo (optionnel)
+Avec `VITE_DEMO_MODE=true`, les comptes locaux restent disponibles pour les démos sans cloud.
 
-Les anciennes données `D_CH`, `D_TACHES`, etc. ne sont plus chargées automatiquement.  
-Chaque organisation part **vide** (`vierge: true` par défaut).
+## 5. Isolation des données
 
-Pour importer des données de test, utilisez l’éditeur SQL ou l’API en insérant des lignes avec le bon **`org_id`**.
+Chaque entreprise a un `org_id`. Les politiques RLS limitent l'accès aux données de l'organisation de l'utilisateur connecté.
 
-## 5. Isolation des données (RLS)
+## 6. Stripe (abonnements)
 
-Chaque table métier a une colonne **`org_id`**.  
-Les politiques RLS limitent l’accès à `org_id = user_org_id()` : un utilisateur ne voit que les données de **son entreprise**.
+Voir **`STRIPE.md`** pour configurer les prix, webhooks et Edge Functions.
 
-## 6. Lancer l’app
+## 7. Lancer l'app
 
 ```bash
-cd app
+cd buildeasy
 npm install
 npm run dev
 ```
 
-Connexion avec email + mot de passe Supabase Auth (plus de vérification locale `COMPTES` / `mdp`).
+Connexion : email + mot de passe Supabase, ou inscription depuis l'app.
