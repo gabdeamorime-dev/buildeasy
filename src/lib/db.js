@@ -422,7 +422,7 @@ export async function updateSituation(id, statut) {
 // ── Planning équipe ───────────────────────────────────────────────
 
 export async function upsertPlanningEq(membre, orgId) {
-  const row = await scopedRow({ membre_id: membre.membreId || membre.id, nom: membre.nom || '', sem: membre.sem || [] }, oid)
+  const row = await scopedRow({ membre_id: membre.membreId || membre.id, nom: membre.nom || '', sem: membre.sem || [] }, orgId)
   if (membre.dbId) {
     const { data, error } = await supabase.from('planning_equipe').update({ sem: row.sem }).eq('id', membre.dbId).select().single()
     throwIfError(error)
@@ -488,7 +488,7 @@ export async function deleteNote(id) {
 // ── Fournisseurs ──────────────────────────────────────────────────
 
 export async function insertFournisseur(f, orgId) {
-  const row = await scopedRow({ nom: f.nom || '', tel: f.tel || '', cat: f.cat || 'materiaux', url: f.url || '' }, oid)
+  const row = await scopedRow({ nom: f.nom || '', tel: f.tel || '', cat: f.cat || 'materiaux', url: f.url || '' }, orgId)
   const { data, error } = await supabase.from('fournisseurs').insert(row).select().single()
   throwIfError(error)
   return mapFournisseur(data)

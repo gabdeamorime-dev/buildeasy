@@ -50,7 +50,7 @@ export async function fetchAppUser(authUserId) {
 
   const { data: profile } = await sb()
     .from('profiles')
-    .select('id, nom, role, email, ch_ids, chantier_ids, vierge, org_id, plan_id')
+    .select('id, nom, role, email, chantier_ids, vierge, org_id, plan_id')
     .eq('id', authUserId)
     .maybeSingle()
 
@@ -66,7 +66,7 @@ export async function fetchAppUser(authUserId) {
   return {
     id: authUserId,
     nom: profile?.nom || umeta.nom || authUser.email?.split('@')[0] || '',
-    role: profile?.role || meta.role || umeta.role || 'admin',
+    role: profile?.role || meta.role || umeta.role || 'employe',
     email: authUser.email ?? profile?.email ?? '',
     chIds: chIdsFromProfile(profile, authUser),
     vierge: profile?.vierge ?? umeta.vierge ?? true,

@@ -26,7 +26,7 @@ FROM auth.users u
 WHERE p.id = u.id AND u.email = 'client@buildeasy.eu';
 
 UPDATE public.profiles p
-SET vierge = true, role = 'employe', chantier_ids = '{}',
+SET vierge = true, role = 'admin', chantier_ids = '{}',
     org_id = '00000000-0000-0000-0000-000000000001', plan_id = 'starter'
 FROM auth.users u
 WHERE p.id = u.id AND u.email = 'demo1@buildeasy.eu';

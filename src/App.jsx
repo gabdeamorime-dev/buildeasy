@@ -2693,7 +2693,8 @@ function SituationsScreen({ user, perms, situations, chantiers, onSave, onChange
   );
 }
 
-function IncidentsScreen({ user, incidents, chantiers, commandes, equipe, onUpdate, onEdit, onCancel, onNav, onSheet }) {
+function IncidentsScreen({ user, perms, incidents, chantiers, commandes, equipe, onUpdate, onEdit, onCancel, onNav, onSheet }) {
+  if(!perms.incidents) return <div className="empty" style={{paddingTop:80}}><p style={{fontSize:14,fontWeight:600}}>Accès restreint</p></div>;
   const [filtre,setFiltre]=useState("ouvert");
   const base=user.role==="admin"?incidents:incidents.filter(i=>chIdsOf(user).includes(i.chId));
   const vis=base.filter(i=>filtre==="tous"?true:i.statut===filtre).sort((a,b)=>(a.statut==="ouvert"?0:1)-(b.statut==="ouvert"?0:1)||(a.prio||3)-(b.prio||3)||(b.ts||0)-(a.ts||0));
@@ -2809,12 +2810,12 @@ function PlusScreen({ user, perms, data, onNav, onLogout, onUpdEq, themeId, setT
 
   const mods = [
     perms.montants    && { id:"devis",      ico:"📝", l:"Devis",               sub:devisAtt.length>0 ? devisAtt.length+" en attente" : "Tous traités",         badge:devisAtt.length,  bt:devisAtt.length>0?"warn":"ok",  feat:"devis" },
-    perms.montants    && { id:"commandes",  ico:"📦", l:"Commandes",            sub:cmdEnCours.length>0 ? cmdEnCours.length+" en cours" : "Tout livré",         badge:cmdEnCours.length, bt:cmdEnCours.length>0?"warn":"ok", feat:"commandes" },
+    (perms.montants || perms.creerCmd) && { id:"commandes",  ico:"📦", l:"Commandes",            sub:cmdEnCours.length>0 ? cmdEnCours.length+" en cours" : "Tout livré",         badge:cmdEnCours.length, bt:cmdEnCours.length>0?"warn":"ok", feat:"commandes" },
     perms.equipe      && { id:"planningEq", ico:"👷", l:"Planning équipe",      sub:"Affectation semaine",                                                      badge:0, feat:"planningEq" },
-                         { id:"agenda",     ico:"📅", l:"Agenda",               sub:"Rendez-vous et événements",                                                badge:0, feat:"agenda" },
+    perms.equipe      && { id:"agenda",     ico:"📅", l:"Agenda",               sub:"Rendez-vous et événements",                                                badge:0, feat:"agenda" },
     perms.equipe      && { id:"conges",     ico:"🏖", l:"Congés",               sub:congesAtt.length>0 ? congesAtt.length+" à valider" : "Aucune demande",      badge:congesAtt.length, bt:congesAtt.length>0?"warn":"ok", feat:"conges" },
-                         { id:"clients",    ico:"👤", l:"Fichier clients / CRM",sub:"Contacts et prospects",                                                    badge:0, feat:"clients" },
-                         { id:"fournisseurs",ico:"📦", l:"Annuaire fournisseurs", sub:(data.fournisseurs||[]).length+" contacts · Appel direct",                  badge:0, feat:"agenda" },
+    perms.montants    && { id:"clients",    ico:"👤", l:"Fichier clients / CRM",sub:"Contacts et prospects",                                                    badge:0, feat:"clients" },
+    perms.equipe      && { id:"fournisseurs",ico:"📦", l:"Annuaire fournisseurs", sub:(data.fournisseurs||[]).length+" contacts · Appel direct",                  badge:0, feat:"agenda" },
     perms.avenants    && { id:"avenants",   ico:"📄", l:"Avenants",             sub:avAtt.length>0 ? avAtt.length+" en attente" : "Tous signés",                badge:avAtt.length,    bt:avAtt.length>0?"warn":"ok", feat:"avenants" },
     perms.heures      && { id:"heures",     ico:"\u23F1",    l:"Planning heures",      sub:hNonVal.length>0 ? hNonVal.length+" à valider" : "Tout validé",             badge:hNonVal.length,  bt:hNonVal.length>0?"warn":"ok", feat:"heures" },
     perms.punch       && { id:"punch",      ico:"🔧", l:"Punch list",           sub:punchOuv.length>0 ? punchOuv.length+" ouverte(s)" : "Tout clos",            badge:punchOuv.length, bt:punchOuv.length>0?"err":"ok", feat:"punch" },
@@ -3052,6 +3053,7 @@ function PlusScreen({ user, perms, data, onNav, onLogout, onUpdEq, themeId, setT
    DEVIS — Création, lots, transformation en chantier
 ═══════════════════════════════════════ */
 function DevisScreen({ user, perms, devis, chantiers, onAddDevis, onConvertDevis, onChangeStatut, onEditDevis, onPrint }) {
+  if(!perms.montants) return <div className="empty" style={{paddingTop:80}}><p style={{fontSize:14,fontWeight:600}}>Accès restreint</p></div>;
   const [selId,setSelId] = useState(null);
   const [showEdit,setShowEdit] = useState(false);
   const setSel = id => { setSelId(id); setShowEdit(false); };
@@ -3220,6 +3222,7 @@ function DevisScreen({ user, perms, devis, chantiers, onAddDevis, onConvertDevis
    COMMANDES FOURNISSEURS
 ═══════════════════════════════════════ */
 function CommandesScreen({ user, perms, commandes, chantiers, fournisseurs, onAddCmd, onReception, onSheet }) {
+  if(!perms.montants && !perms.creerCmd) return <div className="empty" style={{paddingTop:80}}><p style={{fontSize:14,fontWeight:600}}>Accès restreint</p></div>;
   const [chF,setChF]=useState("tous");
   const [q,setQ]=useState("");
   const sfM = {attente:{l:"En attente",t:"warn"},commandee:{l:"Commandée",t:"blue"},livree:{l:"Livrée",t:"ok"},annulee:{l:"Annulée",t:"err"}};
@@ -3573,7 +3576,7 @@ function CongesScreen({ user, perms, conges, onValider, onSheet }) {
                 <div style={{flex:1}}><div style={{fontSize:14,fontWeight:700,color:"var(--t1)"}}>{c.nom}</div><div style={{fontSize:12,color:"var(--t3)",marginTop:3}}>{tM[c.type]||c.type} · {c.jours} jour{c.jours>1?"s":""}</div><div style={{fontSize:11,color:"var(--t4)",marginTop:2}}>Du {c.debut} au {c.fin}</div>{c.motif&&<div style={{fontSize:11,color:"var(--t4)",marginTop:1}}>{c.motif}</div>}</div>
                 <Tag label={sf.l} type={sf.t}/>
               </div>
-              {c.statut==="attente"&&user.role==="admin"&&(
+              {c.statut==="attente"&&(user.role==="admin"||user.role==="chef")&&(
                 <div style={{display:"flex",gap:8,marginTop:10}}>
                   <button className="btn btn-ok btn-sm" style={{flex:1}} onClick={()=>onValider(c.id,"valide")}>Valider</button>
                   <button className="btn btn-err btn-sm" style={{flex:1}} onClick={()=>onValider(c.id,"refuse")}>Refuser</button>
@@ -3587,7 +3590,8 @@ function CongesScreen({ user, perms, conges, onValider, onSheet }) {
   );
 }
 
-function AgendaScreen({ user, agenda, chantiers, equipe, onSheet, onDel }) {
+function AgendaScreen({ user, perms, agenda, chantiers, equipe, onSheet, onDel }) {
+  if(!perms.equipe) return <div className="empty" style={{paddingTop:80}}><p style={{fontSize:14,fontWeight:600}}>Accès restreint</p></div>;
   const today=new Date().toLocaleDateString("fr-FR",{day:"2-digit",month:"2-digit",year:"2-digit"}).replace(/\//g,"/");
   const tIco={visite:"👤",reunion:"📅",livraison:"📦",prospect:"💼",securite:"⛑️",autre:"📌"};
   const tCol={visite:"var(--blue)",reunion:"var(--ok)",livraison:"var(--warn)",prospect:"#7C3AED",securite:"var(--err)",autre:"var(--t3)"};
@@ -3654,7 +3658,8 @@ function FFournisseur({ fourn, onClose, onSave }) {
   );
 }
 
-function FournisseursScreen({ user, fournisseurs, commandes, onAdd, onEdit, onDel }) {
+function FournisseursScreen({ user, perms, fournisseurs, commandes, onAdd, onEdit, onDel }) {
+  if(!perms.equipe) return <div className="empty" style={{paddingTop:80}}><p style={{fontSize:14,fontWeight:600}}>Accès restreint</p></div>;
   const [selCat,setSelCat]=useState("tous");
   const [q,setQ]=useState("");
   const [editF,setEditF]=useState(null);
@@ -3720,7 +3725,8 @@ function FournisseursScreen({ user, fournisseurs, commandes, onAdd, onEdit, onDe
   );
 }
 
-function ClientsScreen({ user, clients, onSheet }) {
+function ClientsScreen({ user, perms, clients, onSheet }) {
+  if(!perms.montants) return <div className="empty" style={{paddingTop:80}}><p style={{fontSize:14,fontWeight:600}}>Accès restreint</p></div>;
   const [q,setQ]=useState("");
   const [f,setF]=useState("tous");
   const visible=clients.filter(c=>(f==="tous"||c.statut===f)&&(c.nom+c.email+(c.note||"")).toLowerCase().includes(q.toLowerCase()));
@@ -4043,8 +4049,8 @@ function AppMobile({ user, onLogout, themeId, setThemeId }) {
   const [agenda,setAgenda]=useState(hydrated.agenda);
   const [notes,setNotes]=useState(hydrated.notes);
   const [fournisseurs,setFournisseurs]=useState(hydrated.fournisseurs);
-  const [planId,setPlanIdRaw]=useState(()=>localStorage.getItem("be_plan")||user.planId||"pro");
-  const setPlanId=id=>{localStorage.setItem("be_plan",id);setPlanIdRaw(id);};
+  const [planId,setPlanIdRaw]=useState(()=>(user.isSupabase?user.planId:null)||localStorage.getItem("be_plan")||user.planId||"pro");
+  const setPlanId=id=>{if(!user.isSupabase)localStorage.setItem("be_plan",id);setPlanIdRaw(id);};
 
   useEffect(()=>{
     if(isLocal||(hydrated._persisted&&!hydrated._cloudPrimary)) return;
@@ -4371,15 +4377,15 @@ function AppMobile({ user, onLogout, themeId, setThemeId }) {
       case "heures":     return <HeuresScreen     user={user} perms={perms} heures={heures} chantiers={chantiers} equipe={equipe} onValider={valH} onSheet={openSheet} onPrint={setPrintDoc}/>;
       case "punch":      return <PunchScreen      user={user} perms={perms} punch={punch} chantiers={chantiers} onUpdate={updP}/>;
       case "situations": return <SituationsScreen user={user} perms={perms} situations={situations} chantiers={chantiers} onSave={onSaveSituation} onChangeStatut={onChangeSituationStatut} onSheet={openSheet}/>;
-      case "incidents":  return <IncidentsScreen  user={user} incidents={incidents} chantiers={chantiers} commandes={commandes} equipe={equipe} onUpdate={updInc} onEdit={inc=>{setEditInc(inc);setIncCtx(null);openSheet("incident");}} onCancel={inc=>delInc(inc.id)} onNav={navTo} onSheet={openSheet}/>;
+      case "incidents":  return <IncidentsScreen  user={user} perms={perms} incidents={incidents} chantiers={chantiers} commandes={commandes} equipe={equipe} onUpdate={updInc} onEdit={inc=>{setEditInc(inc);setIncCtx(null);openSheet("incident");}} onCancel={inc=>delInc(inc.id)} onNav={navTo} onSheet={openSheet}/>;
       case "rapports":   return <RapportsScreen   user={user} rapports={rapports} chantiers={chantiers} onPrint={setPrintDoc}/>;
       case "devis":      return <DevisScreen      user={user} perms={perms} devis={devis} chantiers={chantiers} onAddDevis={onAddDevis} onConvertDevis={d=>{const st=d.lots.reduce((s,l)=>s+l.lignes.reduce((ss,li)=>ss+(li.qte||0)*(li.pu||0),0),0);addC({nom:d.objet,client:d.client,budget:st,prio:2});navTo("chantiers");}} onChangeStatut={onChangeDevisStatut} onEditDevis={onEditDevis} onPrint={setPrintDoc}/>;
       case "commandes":  return <CommandesScreen  user={user} perms={perms} commandes={commandes} chantiers={chantiers} fournisseurs={fournisseurs} onAddCmd={onAddCmd} onReception={onReceptionCmd} onSheet={openSheet}/>;
       case "planningEq": return <PlanningEqScreen user={user} perms={perms} planningEq={planningEq} chantiers={chantiers} equipe={equipe} heures={heures} onEdit={onEditPlanning} onValiderH={valH}/>;
       case "conges":     return <CongesScreen     user={user} perms={perms} conges={conges} onValider={onValiderConge} onSheet={openSheet}/>;
-      case "agenda":     return <AgendaScreen     user={user} agenda={agenda} chantiers={chantiers} equipe={equipe} onSheet={openSheet} onDel={onDelAgenda}/>;
-      case "clients":    return <ClientsScreen    user={user} clients={clients} onSheet={openSheet}/>;
-      case "fournisseurs":return <FournisseursScreen user={user} fournisseurs={fournisseurs} commandes={commandes} onAdd={onAddFournisseur} onEdit={onEditFournisseur} onDel={onDelFournisseur}/>;
+      case "agenda":     return <AgendaScreen     user={user} perms={perms} agenda={agenda} chantiers={chantiers} equipe={equipe} onSheet={openSheet} onDel={onDelAgenda}/>;
+      case "clients":    return <ClientsScreen    user={user} perms={perms} clients={clients} onSheet={openSheet}/>;
+      case "fournisseurs":return <FournisseursScreen user={user} perms={perms} fournisseurs={fournisseurs} commandes={commandes} onAdd={onAddFournisseur} onEdit={onEditFournisseur} onDel={onDelFournisseur}/>;
       case "plus":       return <PlusScreen       user={user} perms={perms} data={data} onNav={setScreen} onLogout={onLogout} onUpdEq={onUpdEq} themeId={themeId} setThemeId={setThemeId} onResetDemo={resetDemo}/>;
       default: return null;
     }
@@ -4568,10 +4574,10 @@ function AppMobile({ user, onLogout, themeId, setThemeId }) {
       {sheet==="punch"    &&perms.gPunch     &&<FPunch    chantiers={chantiers} equipe={equipe} user={user} defaultChId={resolveDefaultChId()} onRememberCh={rememberCh} onClose={closeSheet} onSave={addP}/>}
       {sheet==="incident" &&perms.incidents  &&<FIncident chantiers={chantiers} user={user} ctx={incCtx} edit={editInc} onClose={closeSheet} onSave={addInc} onUpdate={updInc}/>}
       {sheet==="devis"    &&perms.montants   &&<FDevis   onClose={closeSheet} onSave={onAddDevis}/>}
-      {sheet==="commande" &&perms.montants   &&<FCommande chantiers={chantiers} fournisseurs={fournisseurs} defaultChId={resolveDefaultChId()} onRememberCh={rememberCh} onClose={closeSheet} onSave={onAddCmd}/>}
+      {sheet==="commande" &&(perms.montants||perms.creerCmd)&&<FCommande chantiers={chantiers} fournisseurs={fournisseurs} defaultChId={resolveDefaultChId()} onRememberCh={rememberCh} onClose={closeSheet} onSave={onAddCmd}/>}
       {sheet==="conge"    &&perms.equipe     &&<FConge   equipe={equipe} user={user} onClose={closeSheet} onSave={onAddConge}/>}
-      {sheet==="agenda"                      &&<FAgenda  chantiers={chantiers} equipe={equipe} onClose={closeSheet} onSave={onAddAgenda}/>}
-      {sheet==="client"                      &&<FClient  onClose={closeSheet} onSave={onAddClient}/>}
+      {sheet==="agenda"   &&perms.equipe     &&<FAgenda  chantiers={chantiers} equipe={equipe} onClose={closeSheet} onSave={onAddAgenda}/>}
+      {sheet==="client"   &&perms.montants   &&<FClient  onClose={closeSheet} onSave={onAddClient}/>}
       {sheet==="facture"   &&perms.montants   &&<FFacture chantiers={chantiers} devis={devis} onClose={closeSheet} onSave={onAddFacture}/>}
       {sheet==="situation" &&perms.montants   &&<FSituation chantiers={chantiers} onClose={closeSheet} onSave={onSaveSituation}/>}
       {sheet==="heure"     &&perms.heures     &&<FHeures chantiers={chantiers} equipe={equipe} user={user} heures={heures} defaultChId={resolveDefaultChId()} onRememberCh={rememberCh} onClose={closeSheet} onSave={onAddHeure}/>}
