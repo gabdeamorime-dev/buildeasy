@@ -62,3 +62,22 @@ npm run dev
 ```
 
 Connexion : email + mot de passe Supabase, ou inscription depuis l'app.
+
+## 8. Erreur « database error saving new user » à l'inscription
+
+Si l'app affiche une erreur base de données à l'inscription, le trigger Auth n'est pas à jour.
+
+**Correctif (1 minute) :**
+
+1. Ouvrir le [SQL Editor Supabase](https://supabase.com/dashboard/project/nvgemgfeaxqocrmzdmzy/sql/new)
+2. Copier-coller le contenu de `supabase/migrations/20260623_fix_signup_trigger.sql`
+3. Cliquer **Run**
+4. Réessayer l'inscription
+
+**En local (si `.env` contient `DATABASE_URL`) :**
+
+```bash
+npm run db:fix-signup
+```
+
+Le mot de passe Postgres se trouve dans Supabase → **Project Settings → Database → Connection string**.

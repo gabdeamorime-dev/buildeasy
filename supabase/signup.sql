@@ -37,7 +37,7 @@ CREATE TABLE IF NOT EXISTS public.planning_equipe (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- Trigger inscription : profil initial
+-- Trigger inscription : profil initial (compatible Auth Supabase)
 CREATE OR REPLACE FUNCTION public.handle_new_user()
 RETURNS TRIGGER
 LANGUAGE plpgsql
@@ -45,24 +45,45 @@ SECURITY DEFINER
 SET search_path = public
 AS $$
 DECLARE
-  is_signup BOOLEAN := COALESCE(NEW.raw_user_meta_data->>'signup', '') = 'true';
+  is_signup BOOLEAN := COALESCE(NEW.raw_user_meta_data->>'signup', '') IN ('true', 't', '1');
+  user_nom TEXT := COALESCE(
+    NULLIF(trim(NEW.raw_user_meta_data->>'nom'), ''),
+    split_part(COALESCE(NEW.email, ''), '@', 1),
+    'Utilisateur'
+  );
+  user_role TEXT := CASE
+    WHEN is_signup THEN 'admin'
+    ELSE COALESCE(NULLIF(NEW.raw_app_meta_data->>'role', ''), 'employe')
+  END;
 BEGIN
   INSERT INTO public.profiles (id, nom, role, chantier_ids, email, vierge)
   VALUES (
     NEW.id,
-    COALESCE(NULLIF(trim(NEW.raw_user_meta_data->>'nom'), ''), split_part(NEW.email, '@', 1)),
-    CASE
-      WHEN is_signup THEN 'admin'
-      ELSE COALESCE(NULLIF(NEW.raw_app_meta_data->>'role', ''), 'employe')
-    END,
+    user_nom,
+    user_role,
     '{}'::integer[],
     NEW.email,
     CASE WHEN is_signup THEN true ELSE COALESCE((NEW.raw_user_meta_data->>'vierge')::boolean, false) END
   )
-  ON CONFLICT (id) DO NOTHING;
+  ON CONFLICT (id) DO UPDATE SET
+    email = COALESCE(EXCLUDED.email, public.profiles.email),
+    nom = CASE WHEN public.profiles.nom = '' OR public.profiles.nom IS NULL THEN EXCLUDED.nom ELSE public.profiles.nom END,
+    updated_at = now();
   RETURN NEW;
+EXCEPTION WHEN OTHERS THEN
+  RAISE LOG 'handle_new_user failed for %: %', NEW.id, SQLERRM;
+  RAISE;
 END;
 $$;
+
+DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
+CREATE TRIGGER on_auth_user_created
+  AFTER INSERT ON auth.users
+  FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
+
+GRANT USAGE ON SCHEMA public TO supabase_auth_admin;
+GRANT ALL ON TABLE public.profiles TO supabase_auth_admin;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO supabase_auth_admin;
 
 -- Finalise l'org après signup (idempotent)
 CREATE OR REPLACE FUNCTION public.finish_signup(entreprise_nom text, nom_utilisateur text)
@@ -98,6 +119,10 @@ BEGIN
       email = COALESCE(email, (SELECT email FROM auth.users WHERE id = uid)),
       updated_at = now()
     WHERE id = uid;
+
+    INSERT INTO public.billing_subscriptions (org_id, plan_id, status)
+    VALUES (oid, 'starter', 'trialing')
+    ON CONFLICT (org_id) DO NOTHING;
   ELSE
     UPDATE public.organizations
     SET nom = ent
@@ -109,6 +134,8 @@ END;
 $$;
 
 GRANT EXECUTE ON FUNCTION public.finish_signup(text, text) TO authenticated;
+
+REVOKE EXECUTE ON FUNCTION public.finish_signup(text, text) FROM PUBLIC;
 
 -- Billing Stripe (préparation)
 CREATE TABLE IF NOT EXISTS public.billing_subscriptions (
