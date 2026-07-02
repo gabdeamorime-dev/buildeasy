@@ -44,7 +44,11 @@ export function toFacture(r) {
 }
 
 export function toMessage(r) {
-  return { id: r.id, chId: r.chantierId, auteur: r.auteur, role: r.role ?? '', txt: r.texte ?? '', h: r.heure ?? '', d: fmtDate(r.date) }
+  return {
+    id: r.id, chId: r.chantierId, auteur: r.auteur, role: r.role ?? '', txt: r.texte ?? '', h: r.heure ?? '', d: fmtDate(r.date),
+    type: r.type ?? 'text', attachments: Array.isArray(r.attachments) ? r.attachments : [], clientId: r.clientId ?? null,
+    pending: false,
+  }
 }
 
 export function toAvenant(r) {
@@ -150,6 +154,21 @@ export function toNote(r) {
 
 export function toFournisseur(r) {
   return { id: r.id, nom: r.nom ?? '', tel: r.tel ?? '', cat: r.cat ?? 'materiaux', url: r.url ?? '' }
+}
+
+export function messageFromDbRow(row) {
+  return toMessage({
+    id: row.id,
+    chantierId: row.chantier_id,
+    auteur: row.auteur,
+    role: row.role,
+    texte: row.texte,
+    heure: row.heure,
+    date: row.date,
+    type: row.type,
+    attachments: row.attachments,
+    clientId: row.client_id,
+  })
 }
 
 /** Charge toutes les tables Supabase et les convertit au format UI App.jsx */

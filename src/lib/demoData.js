@@ -1,11 +1,14 @@
-/** Données et comptes de démo — mode local sans Supabase */
+/** Données et comptes de démo — jamais en production (mots de passe exclus du bundle). */
+const DEMO_ENABLED = import.meta.env.VITE_DEMO_MODE === 'true' || import.meta.env.DEV
 
-export const DEMO_ACCOUNTS = [
-  { nom: 'Jean Dupont', role: 'admin', email: 'admin@buildeasy.eu', password: 'admin123', chantierIds: [] },
-  { nom: 'Marc Lefebvre', role: 'chef', email: 'chef@buildeasy.eu', password: 'chef123', chantierIds: [1, 5] },
-  { nom: 'Ali Benali', role: 'employe', email: 'ali@buildeasy.eu', password: 'employe123', chantierIds: [1] },
-  { nom: 'M. Dupont Client', role: 'client', email: 'client@buildeasy.eu', password: 'client123', chantierIds: [1] },
-]
+export const DEMO_ACCOUNTS = DEMO_ENABLED
+  ? [
+      { nom: 'Jean Dupont', role: 'admin', email: 'admin@buildeasy.eu', password: 'admin123', chantierIds: [] },
+      { nom: 'Marc Lefebvre', role: 'chef', email: 'chef@buildeasy.eu', password: 'chef123', chantierIds: [1, 5] },
+      { nom: 'Ali Benali', role: 'employe', email: 'ali@buildeasy.eu', password: 'employe123', chantierIds: [1] },
+      { nom: 'M. Dupont Client', role: 'client', email: 'client@buildeasy.eu', password: 'client123', chantierIds: [1] },
+    ]
+  : []
 
 export function findDemoAccount(email, password) {
   const normalized = email.trim().toLowerCase()

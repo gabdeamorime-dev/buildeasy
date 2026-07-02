@@ -1,19 +1,21 @@
 import './landing.css'
+import { useEffect } from 'react'
+import { persistReferralCode } from './lib/auth.js'
 
 const ROLES = [
-  { id: 'admin', tag: 'GÉRANT', color: '#2563EB', bg: '#EFF6FF', title: 'Gérant', desc: 'Pilotage global, finances, CRM, abonnement et équipes.' },
-  { id: 'chef', tag: 'CHEF', color: '#0891B2', bg: '#ECFEFF', title: 'Chef de chantier', desc: 'Chantiers assignés, commandes, planning et validation terrain.' },
-  { id: 'employe', tag: 'CPG', color: '#059669', bg: '#ECFDF5', title: 'Compagnon', desc: 'Pointage, tâches, punch list et communication chantier.' },
-  { id: 'client', tag: 'MOA', color: '#D97706', bg: '#FFFBEB', title: 'Maître d\'ouvrage', desc: 'Suivi chantier, situations, avenants et transparence financière.' },
+  { id: 'admin', tag: 'GÉRANT', color: '#152238', bg: '#eef1f6', title: 'Gérant', desc: 'Pilotage, finances, CRM et équipes.' },
+  { id: 'chef', tag: 'CHEF', color: '#0e7490', bg: '#ecfeff', title: 'Chef de chantier', desc: 'Chantiers, commandes et validation terrain.' },
+  { id: 'employe', tag: 'CPG', color: '#047857', bg: '#ecfdf5', title: 'Compagnon', desc: 'Pointage, tâches et punch list.' },
+  { id: 'client', tag: 'MOA', color: '#b45309', bg: '#fffbeb', title: 'Maître d\'ouvrage', desc: 'Suivi chantier et transparence financière.' },
 ]
 
 const FEATURES = [
-  { icon: '🏗️', title: 'Chantiers & planning', desc: 'Avancement, tâches, météo, notes et affectation équipe en temps réel.' },
-  { icon: '💶', title: 'Devis, factures & trésorerie', desc: 'Situations, relances, marges chantier et vision cash pour le gérant.' },
-  { icon: '📦', title: 'Commandes & fournisseurs', desc: 'Achats chantier, réceptions et annuaire fournisseurs intégré.' },
-  { icon: '🔧', title: 'Punch list & incidents', desc: 'Réserves, sécurité et suivi jusqu\'à clôture sur le terrain.' },
-  { icon: '📱', title: 'Web + mobile', desc: 'Même app sur navigateur, iOS et Android via Capacitor.' },
-  { icon: '🔐', title: 'Multi-tenant sécurisé', desc: 'Données isolées par entreprise avec rôles et permissions Supabase.' },
+  { title: 'Chantiers & planning', desc: 'Avancement, tâches, météo et affectation équipe en temps réel.' },
+  { title: 'Devis, factures & trésorerie', desc: 'Situations, relances et vision cash pour le gérant.' },
+  { title: 'Commandes & fournisseurs', desc: 'Achats chantier, réceptions et annuaire intégré.' },
+  { title: 'Punch list & incidents', desc: 'Réserves, sécurité et suivi jusqu\'à clôture.' },
+  { title: 'Web + mobile', desc: 'Navigateur, iOS et Android via Capacitor.' },
+  { title: 'Multi-tenant sécurisé', desc: 'Données isolées par entreprise avec rôles Supabase.' },
 ]
 
 const PLANS = [
@@ -23,12 +25,17 @@ const PLANS = [
 ]
 
 export default function LandingPage({ onEnterApp }) {
+  useEffect(() => {
+    const ref = new URLSearchParams(window.location.search).get('ref')
+    if (ref) persistReferralCode(ref)
+  }, [])
+
   return (
     <div className="landing">
       <nav className="lp-nav">
         <div className="lp-brand">
           <div className="lp-logo" aria-hidden>
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
               <path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z" />
               <polyline points="9 22 9 12 15 12 15 22" />
             </svg>
@@ -41,48 +48,48 @@ export default function LandingPage({ onEnterApp }) {
         </div>
       </nav>
 
-      <header className="lp-hero lp-fade-in">
+      <header className="lp-hero">
         <div className="lp-hero-grid">
           <div>
             <div className="lp-badge">BTP · SaaS · France</div>
             <h1>Gérez vos chantiers <em>sans Excel</em> ni paperasse.</h1>
             <p className="lp-lead">
-              BuildEasy centralise chantiers, équipes, devis, commandes et suivi client — pour le gérant, le chef de chantier, les compagnons et le maître d&apos;ouvrage.
+              Chantiers, équipes, devis et suivi client — une application pour gérants, chefs, compagnons et maîtres d&apos;ouvrage.
             </p>
             <div className="lp-hero-cta">
               <button type="button" className="lp-btn lp-btn-primary" onClick={() => onEnterApp('signup')}>
-                Démarrer — 14 jours gratuits
+                Démarrer — 15 jours gratuits
               </button>
               <button type="button" className="lp-btn lp-btn-outline" onClick={() => onEnterApp('login')}>
                 Accéder à l&apos;application
               </button>
             </div>
             <div className="lp-trust">
-              <span><strong>4 rôles</strong> connectés</span>
-              <span><strong>Supabase</strong> sécurisé</span>
-              <span><strong>Mobile</strong> iOS & Android</span>
+              <span>4 rôles connectés</span>
+              <span>Données sécurisées</span>
+              <span>iOS & Android</span>
             </div>
           </div>
 
           <div className="lp-preview" aria-hidden>
             <div className="lp-preview-bar">
-              <span className="lp-dot lp-dot-r" />
-              <span className="lp-dot lp-dot-y" />
-              <span className="lp-dot lp-dot-g" />
+              <span className="lp-dot" />
+              <span className="lp-dot" />
+              <span className="lp-dot" />
             </div>
             <div className="lp-preview-body">
               <div className="lp-stat-row">
-                <div className="lp-stat"><b style={{ color: '#2563EB' }}>5</b><span>Chantiers actifs</span></div>
-                <div className="lp-stat"><b style={{ color: '#DC2626' }}>2</b><span>Alertes</span></div>
-                <div className="lp-stat"><b style={{ color: '#059669' }}>6/6</b><span>Équipe</span></div>
+                <div className="lp-stat"><b style={{ color: '#152238' }}>5</b><span>Actifs</span></div>
+                <div className="lp-stat"><b style={{ color: '#b91c1c' }}>2</b><span>Alertes</span></div>
+                <div className="lp-stat"><b style={{ color: '#047857' }}>6/6</b><span>Équipe</span></div>
               </div>
-              <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>Villa Dupont — 68% avancement</div>
-              <div style={{ height: 8, borderRadius: 99, background: '#e2e8f0', overflow: 'hidden' }}>
-                <div style={{ width: '68%', height: '100%', background: 'linear-gradient(90deg,#2563EB,#3b82f6)', borderRadius: 99 }} />
+              <div className="lp-progress-label">Villa Dupont — 68%</div>
+              <div className="lp-progress-track">
+                <div className="lp-progress-fill" />
               </div>
               <div className="lp-role-pills">
                 {ROLES.map((r) => (
-                  <span key={r.id} className="lp-pill" style={{ background: r.bg, color: r.color }}>{r.tag}</span>
+                  <span key={r.id} className="lp-pill" style={{ background: r.bg, color: r.color, borderColor: r.color + '33' }}>{r.tag}</span>
                 ))}
               </div>
             </div>
@@ -91,12 +98,12 @@ export default function LandingPage({ onEnterApp }) {
       </header>
 
       <section className="lp-section" id="fonctionnalites">
-        <h2>Tout le métier, une seule app</h2>
-        <p className="lp-section-lead">Du devis à la réception de chantier, chaque acteur voit uniquement ce qui le concerne.</p>
+        <h2>Fonctionnalités</h2>
+        <p className="lp-section-lead">Du devis à la réception, chaque acteur voit ce qui le concerne.</p>
         <div className="lp-features">
-          {FEATURES.map((f) => (
+          {FEATURES.map((f, i) => (
             <article key={f.title} className="lp-feature">
-              <div className="lp-feature-icon">{f.icon}</div>
+              <div className="lp-feature-num">{String(i + 1).padStart(2, '0')}</div>
               <h3>{f.title}</h3>
               <p>{f.desc}</p>
             </article>
@@ -106,28 +113,28 @@ export default function LandingPage({ onEnterApp }) {
 
       <section className="lp-section" id="roles">
         <h2>4 profils, 1 plateforme</h2>
-        <p className="lp-section-lead">Permissions adaptées à chaque métier du BTP.</p>
+        <p className="lp-section-lead">Permissions adaptées à chaque métier.</p>
         <div className="lp-roles">
           {ROLES.map((r) => (
             <div key={r.id} className="lp-role">
-              <span className="lp-role-tag" style={{ background: r.bg, color: r.color }}>{r.tag}</span>
-              <h3 style={{ margin: '0 0 6px', fontSize: 15 }}>{r.title}</h3>
-              <p style={{ margin: 0, fontSize: 13, color: 'var(--lp-muted)', lineHeight: 1.5 }}>{r.desc}</p>
+              <span className="lp-role-tag" style={{ background: r.bg, color: r.color, borderColor: r.color + '33' }}>{r.tag}</span>
+              <h3>{r.title}</h3>
+              <p>{r.desc}</p>
             </div>
           ))}
         </div>
       </section>
 
       <section className="lp-section" id="tarifs">
-        <h2>Des offres simples</h2>
-        <p className="lp-section-lead">Commencez en Starter, évoluez quand votre équipe grandit.</p>
+        <h2>Tarifs</h2>
+        <p className="lp-section-lead">Commencez en Starter, évoluez avec votre équipe.</p>
         <div className="lp-pricing">
           {PLANS.map((p) => (
             <div key={p.name} className={`lp-price-card${p.featured ? ' featured' : ''}`}>
-              <div style={{ fontWeight: 700, color: 'var(--lp-muted)', fontSize: 13 }}>{p.name}</div>
+              <div className="lp-price-label">{p.name}</div>
               <div className="lp-price">{p.price}€<small>/mois</small></div>
               <p style={{ fontSize: 13, color: 'var(--lp-muted)', margin: '0 0 14px' }}>{p.desc}</p>
-              <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, color: 'var(--lp-muted)', lineHeight: 1.8 }}>
+              <ul className="lp-price-feats">
                 {p.feats.map((f) => <li key={f}>{f}</li>)}
               </ul>
             </div>
@@ -138,16 +145,16 @@ export default function LandingPage({ onEnterApp }) {
       <section className="lp-cta-band">
         <h2>Prêt à digitaliser vos chantiers ?</h2>
         <p>Créez votre espace en 2 minutes ou testez avec un compte démo.</p>
-        <button type="button" className="lp-btn lp-btn-outline" style={{ background: '#fff', border: 'none' }} onClick={() => onEnterApp('signup')}>
+        <button type="button" className="lp-btn lp-btn-on-dark" onClick={() => onEnterApp('signup')}>
           Créer mon compte gérant
         </button>
       </section>
 
       <footer className="lp-footer">
         <p>© {new Date().getFullYear()} BuildEasy — Gestion de chantier BTP</p>
-        <p style={{ marginTop: 8 }}>
+        <p style={{ marginTop: 12 }}>
           <button type="button" className="lp-btn lp-btn-ghost" style={{ padding: '8px 12px' }} onClick={() => onEnterApp('login')}>
-            Ouvrir l&apos;application →
+            Ouvrir l&apos;application
           </button>
         </p>
       </footer>

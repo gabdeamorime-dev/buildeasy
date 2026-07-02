@@ -27,7 +27,7 @@ export function createDemoStore() {
         priorite: f.priorite || 'normale',
         note: f.note || '',
         adresse: f.adresse || '',
-        meteo: '📋',
+        meteo: '—',
       }
       data.chantiers.push(row)
       return row
@@ -69,7 +69,7 @@ export function createDemoStore() {
         chantierId: parseInt(f.chantierId, 10) || 0,
         date: f.date || '',
         auteur: f.auteur || '',
-        meteo: f.meteo || '☀️',
+        meteo: f.meteo || 'Ensoleillé',
         temperature: f.temperature || '',
         avancement: f.avancement || '',
         problemes: f.problemes || 'RAS',

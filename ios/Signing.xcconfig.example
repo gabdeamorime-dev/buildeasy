@@ -1,0 +1,4 @@
+// Copiez ce fichier en Signing.xcconfig et renseignez votre Team ID Apple Developer.
+// Trouvez-le sur : https://developer.apple.com/account → Membership → Team ID
+// Ou : npm run configure:ios (lit APPLE_TEAM_ID dans .env)
+DEVELOPMENT_TEAM =

@@ -1,0 +1,7 @@
+android/
+ios/
+node_modules/
+.git/
+*.local.env
+.stripe-setup.local.env
+supabase/.temp/

@@ -1,22 +1,76 @@
 <!doctype html>
-<html lang="fr">
+<html lang="fr" class="be-landing-view">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/png" href="/icon.png" />
-    <link rel="apple-touch-icon" href="/icon.png" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <meta name="theme-color" content="#2563EB" />
+    <link rel="icon" type="image/svg+xml" href="/icons.svg" />
+    <link rel="apple-touch-icon" href="/icons.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <meta name="theme-color" content="#152238" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="format-detection" content="telephone=no" />
     <meta name="description" content="BuildEasy — Logiciel de gestion de chantier BTP pour gérants, chefs de chantier, compagnons et maîtres d'ouvrage. Devis, planning, punch list et suivi client." />
     <meta property="og:title" content="BuildEasy — Gestion de chantier BTP" />
     <meta property="og:description" content="Pilotez vos chantiers, équipes et finances depuis une seule application." />
     <meta property="og:type" content="website" />
     <link rel="manifest" href="/manifest.json" />
     <title>BuildEasy — Gestion de chantier BTP</title>
+    <style>
+      #be-boot {
+        position: fixed; inset: 0; z-index: 99999;
+        display: flex; flex-direction: column; align-items: center; justify-content: center;
+        background: #eceef2; color: #152238; font-family: system-ui, sans-serif;
+        transition: opacity 0.2s ease;
+      }
+      #be-boot.hide { opacity: 0; pointer-events: none; }
+      #be-boot .logo {
+        width: 48px; height: 48px; border-radius: 10px; background: #152238;
+        display: grid; place-items: center; margin-bottom: 16px;
+      }
+      #be-boot p { margin: 0; font-size: 14px; color: #6b7280; }
+      #be-offline-first {
+        display: none; position: fixed; inset: 0; z-index: 100000;
+        flex-direction: column; align-items: center; justify-content: center;
+        background: #eceef2; color: #152238; font-family: system-ui, sans-serif;
+        text-align: center; padding: 32px;
+      }
+      #be-offline-first h1 { font-size: 1.25rem; margin: 0 0 12px; }
+      #be-offline-first p { color: #6b7280; font-size: 14px; line-height: 1.5; max-width: 320px; }
+    </style>
   </head>
   <body>
+    <div id="be-offline-first" role="alert">
+      <div class="logo" style="width:48px;height:48px;border-radius:10px;background:#152238;display:grid;place-items:center;margin-bottom:16px;color:#fff;font-size:22px">🏗</div>
+      <h1>BuildEasy</h1>
+      <p>Pour utiliser l'application sans WiFi, ouvrez-la une première fois avec une connexion internet. Elle sera ensuite disponible hors ligne.</p>
+    </div>
+    <div id="be-boot" aria-hidden="true">
+      <div class="logo">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+      </div>
+      <p>Chargement…</p>
+    </div>
     <div id="root"></div>
+    <script>
+      (function () {
+        function dismissBoot() {
+          var el = document.getElementById('be-boot');
+          if (!el) return;
+          el.classList.add('hide');
+          setTimeout(function () { el.remove(); }, 220);
+        }
+        window.__BE_DISMISS_BOOT__ = dismissBoot;
+        if (!navigator.onLine && !navigator.serviceWorker?.controller && !sessionStorage.getItem('be_pwa_ready')) {
+          document.getElementById('be-offline-first').style.display = 'flex';
+          document.getElementById('be-boot').style.display = 'none';
+          document.getElementById('root').style.display = 'none';
+          return;
+        }
+        // Filet de sécurité : ne jamais bloquer l'UI si React met du temps à démarrer
+        setTimeout(dismissBoot, 4000);
+      })();
+    </script>
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>

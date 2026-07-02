@@ -1,21 +1,32 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from "react";
+import "./design-system.css";
 import { isSupabaseConfigured, supabase } from "./supabase.js";
-import { signInWithEmail, signUpWithEmail, resetPassword, signOut as authSignOut, onAuthChange, getSessionUser } from "./lib/auth.js";
+import { signInWithEmail, signInAndAcceptInvite, signUpWithEmail, signUpWithInvite, resetPassword, signOut as authSignOut, onAuthChange, getSessionUser } from "./lib/auth.js";
+import { previewInvitation, getOrgUsageStats } from "./lib/team.js";
+import TeamPanel from "./ui/TeamPanel.jsx";
 import { loadAppDataForUi } from "./lib/appDataBridge.js";
-import { isStripeConfigured, stripeCheckoutUrl, stripePortalUrl } from "./lib/stripe.js";
+import { loadEquipeWithAccounts } from "./lib/team.js";
+import { isStripeConfigured, startStripeCheckout, startStripePortal, BILLING_STATUS_LABELS } from "./lib/stripe.js";
+import { fetchBillingSubscription } from "./lib/db.js";
 import { loadAppState, saveAppState, clearAppState, loadLastChId, saveLastChId } from "./lib/persistence.js";
 import { chIdsOf, filterByChAccess, visibleChantiers, isAdmin } from "./lib/access.js";
 import * as cloud from "./lib/cloudSync.js";
+import { applyOfflineRemap, mergeMessages } from "./lib/offlineRemap.js";
+import { saveMediaBlob, detectMediaType, MEDIA_LIMITS } from "./lib/mediaStore.js";
+import { messageFromDbRow } from "./lib/appDataBridge.js";
+import ChatMessageBody from "./ui/ChatMessageBody.jsx";
+import { DEMO_COMPTES, isDemoModeEnabled } from "./lib/demoComptes.js";
+import { safeHref, safeExternalHref } from "./lib/safeUrl.js";
+import { METEO_PRESETS, AGENDA_TYPES, INCIDENT_TYPES, ModIcon, IcoHome, IcoBuild, IcoTask, IcoChat, IcoMore, IcoPhone, IcoAlert, IcoPlus } from "./ui/icons.jsx";
+import { EmptyState, QuickAction, CallTile, MetaRow } from "./ui/primitives.jsx";
 
-const DEMO_AUTH = import.meta.env.VITE_DEMO_MODE !== "false";
+const DEMO_AUTH = isDemoModeEnabled();
 
-/*
-  BuildEasy v10 — Terrain BTP Premium
-  admin@buildeasy.eu / admin123
-  chef@buildeasy.eu  / chef123
-  ali@buildeasy.eu   / employe123
-  client@buildeasy.eu/ client123
-*/
+/** Emails démo affichés sur l'écran de connexion (cloud ou local). */
+const DEMO_ACCOUNT_EMAILS = new Set([
+  "admin@buildeasy.eu", "chef@buildeasy.eu", "ali@buildeasy.eu", "client@buildeasy.eu",
+  "demo1@buildeasy.eu", "demo2@buildeasy.eu", "demo3@buildeasy.eu",
+]);
 
 const ROLES = {
   admin:   { id:"admin",   label:"Gérant",           abbr:"GER", color:"#2563EB" },
@@ -55,17 +66,6 @@ const FEAT_LABELS = {
   tresorerie:"Trésorerie prévisionnelle", planningEq:"Planning d'équipe",
   conges:"Gestion des congés",
 };
-const COMPTES = [
-  // ── Comptes démo riches (données pré-remplies pour présentation) ──
-  { id:1, nom:"Jean Dupont",    role:"admin",   email:"admin@buildeasy.eu",  mdp:"admin123",   chIds:[],   vierge:false },
-  { id:2, nom:"Marc Lefebvre", role:"chef",    email:"chef@buildeasy.eu",   mdp:"chef123",    chIds:[1,5], vierge:false },
-  { id:3, nom:"Ali Benali",    role:"employe", email:"ali@buildeasy.eu",    mdp:"employe123", chIds:[1],   vierge:false },
-  { id:4, nom:"M. Dupont",     role:"client",  email:"client@buildeasy.eu", mdp:"client123",  chIds:[1],   vierge:false },
-  // ── Comptes démo vierges (à donner aux prospects — repartent de zéro) ──
-  { id:10, nom:"Gérant Demo 1", role:"admin",  email:"demo1@buildeasy.eu",  mdp:"buildeasy",  chIds:[],   vierge:true },
-  { id:11, nom:"Gérant Demo 2", role:"admin",  email:"demo2@buildeasy.eu",  mdp:"buildeasy",  chIds:[],   vierge:true },
-  { id:12, nom:"Gérant Demo 3", role:"admin",  email:"demo3@buildeasy.eu",  mdp:"buildeasy",  chIds:[],   vierge:true },
-];
 
 const D_CH = [
   { id:1, nom:"Rénovation Villa Dupont",   client:"M. Dupont",         tel:"06 11 22 33 44", corps:"Maçonnerie · Plomberie", statut:"actif",  av:68,  budget:85000,  dep:62400, debut:"10/03/26", fin:"30/06/26", rdv:"07:30", meteo:"Ensoleillé 22°C", prio:1, note:"Délai façade à surveiller", adresse:"12 rue des Roses, Paris 16e",  taux:38 },
@@ -163,12 +163,12 @@ const D_FOURNISSEURS = [
   {id:10, nom:"Sonepar",          tel:"3655",           cat:"electricite", url:"" },
 ];
 const URGENCES=[
-  {l:"SAMU",       n:"15",           e:"🚑", c:"#DC2626"},
-  {l:"Pompiers",   n:"18",           e:"🚒", c:"#EA580C"},
-  {l:"Police",     n:"17",           e:"👮", c:"#1D4ED8"},
-  {l:"Urg. Europ.",n:"112",          e:"🆘", c:"#7C3AED"},
-  {l:"CARSAT",     n:"09 71 10 77 00",e:"⚕", c:"#0891B2"},
-  {l:"Insp. Trav.",n:"0801 200 212", e:"📋", c:"#059669"},
+  {l:"SAMU",       n:"15",           c:"#DC2626"},
+  {l:"Pompiers",   n:"18",           c:"#EA580C"},
+  {l:"Police",     n:"17",           c:"#1D4ED8"},
+  {l:"Urg. Europ.",n:"112",          c:"#7C3AED"},
+  {l:"CARSAT",     n:"09 71 10 77 00",c:"#0891B2"},
+  {l:"Insp. Trav.",n:"0801 200 212", c:"#059669"},
 ];
 
 const D_INCIDENTS = [
@@ -334,150 +334,15 @@ const calcHS = (h,base=35) => {
   return {normal:base/5,sup25:Math.min(sup,2),sup50:Math.max(0,sup-2)};
 };
 const APP_THEMES = [
-  { id:"ocean",   name:"Océan",    emoji:"🌊", desc:"Bleu pro — défaut",        swatch:["#F0F4F8","#2563EB"] },
-  { id:"forest",  name:"Forêt",    emoji:"🌲", desc:"Vert chantier & nature",   swatch:["#F0F7F4","#059669"] },
-  { id:"sunset",  name:"Sunset",   emoji:"🌅", desc:"Chaud & énergique",        swatch:["#FFF8F0","#EA580C"] },
-  { id:"terra",   name:"Terra",    emoji:"🧱", desc:"Terre & BTP",              swatch:["#FAF6F1","#C2410C"] },
-  { id:"slate",   name:"Slate",    emoji:"◻",  desc:"Minimal & sobre",          swatch:["#FAFAFA","#18181B"] },
-  { id:"midnight",name:"Midnight", emoji:"🌙", desc:"Mode sombre",              swatch:["#0B1120","#6366F1"] },
+  { id:"ocean",   name:"Océan",    desc:"Navy pro — défaut",       swatch:["#eceef2","#152238"] },
+  { id:"forest",  name:"Forêt",    desc:"Vert chantier",           swatch:["#eef4f0","#14532d"] },
+  { id:"sunset",  name:"Sunset",   desc:"Terre cuite",             swatch:["#f5f0eb","#9a3412"] },
+  { id:"terra",   name:"Terra",    desc:"BTP & matériaux",         swatch:["#f3ede6","#78350f"] },
+  { id:"slate",   name:"Slate",    desc:"Minimal noir & blanc",    swatch:["#ebecef","#18181b"] },
+  { id:"midnight",name:"Midnight", desc:"Mode sombre",             swatch:["#0c1018","#93c5fd"] },
 ];
-const CSS = `
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
-*,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
-:root,[data-theme="ocean"]{
-  --bg:#F0F4F8;--w:#FFF;--g1:#F8FAFC;--g2:#E2E8F0;--g3:#CBD5E1;--g4:#94A3B8;
-  --t1:#0F172A;--t2:#1E293B;--t3:#475569;--t4:#94A3B8;
-  --blue:#2563EB;--blue-l:#EFF6FF;--blue-b:#BFDBFE;
-  --ok:#059669;--ok-l:#ECFDF5;--ok-b:#A7F3D0;
-  --warn:#D97706;--warn-l:#FFFBEB;--warn-b:#FDE68A;
-  --err:#DC2626;--err-l:#FEF2F2;--err-b:#FECACA;
-  --overlay:rgba(15,23,42,.52);--hdr-ico:#2563EB;
-}
-[data-theme="forest"]{
-  --bg:#F0F7F4;--w:#FFF;--g1:#F4FAF7;--g2:#D1E7DD;--g3:#A3CFBB;--g4:#6B9E82;
-  --t1:#1A2E1F;--t2:#2D4A35;--t3:#4A6B54;--t4:#8FA898;
-  --blue:#059669;--blue-l:#ECFDF5;--blue-b:#A7F3D0;
-  --ok:#0891B2;--ok-l:#ECFEFF;--ok-b:#A5F3FC;
-  --warn:#CA8A04;--warn-l:#FEFCE8;--warn-b:#FEF08A;
-  --err:#DC2626;--err-l:#FEF2F2;--err-b:#FECACA;
-  --overlay:rgba(26,46,31,.45);--hdr-ico:#059669;
-}
-[data-theme="sunset"]{
-  --bg:#FFF8F0;--w:#FFF;--g1:#FFF7ED;--g2:#FED7AA;--g3:#FDBA74;--g4:#FB923C;
-  --t1:#431407;--t2:#7C2D12;--t3:#9A3412;--t4:#C2410C;
-  --blue:#EA580C;--blue-l:#FFF7ED;--blue-b:#FED7AA;
-  --ok:#059669;--ok-l:#ECFDF5;--ok-b:#A7F3D0;
-  --warn:#D97706;--warn-l:#FFFBEB;--warn-b:#FDE68A;
-  --err:#DC2626;--err-l:#FEF2F2;--err-b:#FECACA;
-  --overlay:rgba(67,20,7,.4);--hdr-ico:#EA580C;
-}
-[data-theme="terra"]{
-  --bg:#FAF6F1;--w:#FFF;--g1:#F5EDE4;--g2:#E8D5C4;--g3:#D4B896;--g4:#A89078;
-  --t1:#292018;--t2:#443528;--t3:#6B5344;--t4:#9C8575;
-  --blue:#C2410C;--blue-l:#FFF7ED;--blue-b:#FDBA74;
-  --ok:#15803D;--ok-l:#F0FDF4;--ok-b:#BBF7D0;
-  --warn:#B45309;--warn-l:#FFFBEB;--warn-b:#FDE68A;
-  --err:#B91C1C;--err-l:#FEF2F2;--err-b:#FECACA;
-  --overlay:rgba(41,32,24,.5);--hdr-ico:#C2410C;
-}
-[data-theme="slate"]{
-  --bg:#FAFAFA;--w:#FFF;--g1:#F4F4F5;--g2:#E4E4E7;--g3:#D4D4D8;--g4:#A1A1AA;
-  --t1:#09090B;--t2:#18181B;--t3:#52525B;--t4:#A1A1AA;
-  --blue:#18181B;--blue-l:#F4F4F5;--blue-b:#D4D4D8;
-  --ok:#059669;--ok-l:#ECFDF5;--ok-b:#A7F3D0;
-  --warn:#D97706;--warn-l:#FFFBEB;--warn-b:#FDE68A;
-  --err:#DC2626;--err-l:#FEF2F2;--err-b:#FECACA;
-  --overlay:rgba(9,9,11,.45);--hdr-ico:#18181B;
-}
-[data-theme="midnight"]{
-  --bg:#0B1120;--w:#151D2E;--g1:#1A2438;--g2:#243049;--g3:#374866;--g4:#64748B;
-  --t1:#F1F5F9;--t2:#CBD5E1;--t3:#94A3B8;--t4:#64748B;
-  --blue:#6366F1;--blue-l:#1E1B4B;--blue-b:#4338CA;
-  --ok:#34D399;--ok-l:#064E3B;--ok-b:#059669;
-  --warn:#FBBF24;--warn-l:#451A03;--warn-b:#D97706;
-  --err:#F87171;--err-l:#450A0A;--err-b:#DC2626;
-  --overlay:rgba(0,0,0,.65);--hdr-ico:#6366F1;
-}
-:root{
-  --r:8px;--r2:12px;--sh:0 1px 3px rgba(0,0,0,.07);
-  --f:'Inter',-apple-system,sans-serif;
-  --sb:env(safe-area-inset-bottom,0px);--st:env(safe-area-inset-top,0px);
-}
-html,body,#root{height:100%;font-family:var(--f);background:var(--bg);color:var(--t1);overflow:hidden;-webkit-tap-highlight-color:transparent;-webkit-font-smoothing:antialiased;transition:background-color .25s ease,color .25s ease;}
-.card,.nav,.btn,.inp,.sh,.fab-r,.fab-b{transition:background-color .2s ease,border-color .2s ease,color .2s ease,box-shadow .2s ease;}
-::-webkit-scrollbar{display:none;}
-@keyframes up{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
-@keyframes su{from{transform:translateY(100%)}to{transform:none}}
-@keyframes fi{from{opacity:0}to{opacity:1}}
-.u0{animation:up .2s ease both}.u1{animation:up .2s .05s ease both}
-.u2{animation:up .2s .1s ease both}.u3{animation:up .2s .15s ease both}
-.btn{display:inline-flex;align-items:center;justify-content:center;gap:7px;min-height:48px;padding:0 20px;border-radius:var(--r2);border:none;cursor:pointer;font-family:var(--f);font-size:15px;font-weight:600;transition:all .12s;white-space:nowrap;-webkit-tap-highlight-color:transparent;}
-.btn:active{transform:scale(.96);}.btn:disabled{opacity:.4;pointer-events:none;}
-.btn-blue{background:var(--blue);color:#fff;box-shadow:0 2px 8px rgba(37,99,235,.28);}
-.btn-ok{background:var(--ok);color:#fff;}.btn-err{background:var(--err);color:#fff;}
-.btn-warn{background:var(--warn);color:#fff;}
-.btn-out{background:var(--w);color:var(--t2);border:1.5px solid var(--g3);box-shadow:var(--sh);}
-.btn-ghost{background:transparent;color:var(--blue);border:none;font-weight:600;}
-.btn-sm{min-height:38px;padding:0 14px;font-size:13px;}.btn-xs{min-height:32px;padding:0 11px;font-size:12px;}
-.btn-fw{width:100%;}.btn-sq{width:48px;padding:0;}
-.inp{width:100%;height:48px;padding:0 14px;background:var(--w);border:1.5px solid var(--g2);border-radius:var(--r2);color:var(--t1);font-family:var(--f);font-size:15px;outline:none;transition:border-color .15s;box-shadow:var(--sh);}
-.inp:focus{border-color:var(--blue);}.inp::placeholder{color:var(--t4);}
-select.inp{cursor:pointer;}select.inp option{background:var(--w);color:var(--t1);}
-.inp-a{height:auto;padding:12px 14px;resize:none;min-height:80px;line-height:1.6;}
-.lbl{font-size:11px;font-weight:700;color:var(--t3);letter-spacing:.08em;text-transform:uppercase;margin-bottom:6px;display:block;}
-.card{background:var(--w);border-radius:var(--r2);box-shadow:var(--sh);border:1px solid var(--g2);}
-.card2{background:var(--g1);border-radius:var(--r2);border:1px solid var(--g2);}
-.tap{cursor:pointer;transition:all .12s;}.tap:active{transform:scale(.984);filter:brightness(.97);}
-.tag{display:inline-flex;align-items:center;gap:4px;padding:3px 9px;border-radius:var(--r);font-size:11px;font-weight:700;}
-.tag-ok{background:var(--ok-l);color:var(--ok);border:1px solid var(--ok-b);}
-.tag-warn{background:var(--warn-l);color:var(--warn);border:1px solid var(--warn-b);}
-.tag-err{background:var(--err-l);color:var(--err);border:1px solid var(--err-b);}
-.tag-blue{background:var(--blue-l);color:var(--blue);border:1px solid var(--blue-b);}
-.tag-gray{background:var(--g1);color:var(--t3);border:1px solid var(--g3);}
-.bar{height:6px;background:var(--g2);border-radius:99px;overflow:hidden;}
-.bar4{height:4px;background:var(--g2);border-radius:99px;overflow:hidden;}
-.bar-fill{height:100%;border-radius:99px;transition:width 1s cubic-bezier(.4,0,.2,1);}
-.sbg{position:fixed;inset:0;background:var(--overlay);backdrop-filter:blur(4px);z-index:500;display:flex;align-items:flex-end;animation:fi .15s ease both;}
-.sh{background:var(--w);border-radius:20px 20px 0 0;border-top:1px solid var(--g2);width:100%;max-height:93vh;overflow-y:auto;padding:0 20px calc(28px + var(--sb));animation:su .25s cubic-bezier(.32,0,.1,1) both;box-shadow:0 -8px 32px rgba(0,0,0,.1);}
-.drag{width:40px;height:4px;background:var(--g3);border-radius:99px;margin:14px auto 22px;}
-.nav{position:fixed;bottom:0;left:0;right:0;background:var(--w);border-top:1.5px solid var(--g2);display:flex;padding:6px 0 calc(6px + var(--sb));z-index:100;box-shadow:0 -2px 12px rgba(0,0,0,.05);}
-.nt{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;padding:4px 2px;cursor:pointer;position:relative;transition:color .12s;}
-.nt-ico{font-size:22px;line-height:1;}.nt-lbl{font-size:9px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;}
-.nt-off{color:var(--g4);}.nt-on{color:var(--blue);}
-.nt-dot{position:absolute;top:1px;right:calc(50% - 20px);width:8px;height:8px;background:var(--err);border-radius:50%;border:2px solid var(--w);}
-.fab{position:fixed;bottom:calc(80px + var(--sb));right:16px;z-index:90;display:flex;flex-direction:column;align-items:center;gap:4px;}
-.fab-r{width:56px;height:56px;border-radius:16px;background:var(--err);color:#fff;border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:24px;box-shadow:0 4px 20px rgba(220,38,38,.4);}
-.fab-b{width:56px;height:56px;border-radius:16px;background:var(--blue);color:#fff;border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:22px;box-shadow:0 4px 20px rgba(37,99,235,.3);margin-top:8px;}
-.fab-r:active,.fab-b:active{transform:scale(.87);}
-.fab-lbl{font-size:9px;font-weight:700;color:var(--err);text-transform:uppercase;background:var(--err-l);padding:2px 6px;border-radius:4px;border:1px solid var(--err-b);}
-.row{display:flex;justify-content:space-between;align-items:center;}
-.col{display:flex;flex-direction:column;}
-.gap6{gap:6px}.gap8{gap:8px}.gap10{gap:10px}.gap12{gap:12px}.gap14{gap:14px}.gap16{gap:16px}
-.empty{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:56px 24px;color:var(--t4);}
-.sec{font-size:11px;font-weight:700;color:var(--t3);text-transform:uppercase;letter-spacing:.1em;margin-bottom:10px;}
-.div{height:1px;background:var(--g2);}
-.sx{display:flex;overflow-x:auto;gap:8px;padding-bottom:2px;}
-.av{border-radius:var(--r);display:flex;align-items:center;justify-content:center;font-weight:700;flex-shrink:0;}
-.theme-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
-.theme-card{padding:12px;border-radius:var(--r2);border:2px solid var(--g2);background:var(--w);cursor:pointer;text-align:left;transition:all .15s;font-family:var(--f);}
-.theme-card:active{transform:scale(.98);}
-.theme-card.on{border-color:var(--blue);background:var(--blue-l);box-shadow:0 0 0 1px var(--blue-b);}
-.theme-swatch{display:flex;gap:4px;margin-bottom:8px;}
-.theme-swatch span{flex:1;height:22px;border-radius:6px;border:1px solid rgba(0,0,0,.06);}
-.print-overlay{position:fixed;inset:0;background:var(--overlay);z-index:600;display:flex;align-items:flex-start;justify-content:center;padding:20px;overflow-y:auto;}
-.print-sheet{background:#fff;border-radius:14px;max-width:680px;width:100%;margin:auto;box-shadow:0 20px 60px rgba(0,0,0,.25);overflow:hidden;}
-.print-doc{color:#111;font-size:14px;line-height:1.5;}
-@media print{
-  body * {visibility:hidden;}
-  .print-overlay,.print-overlay *{visibility:visible;}
-  .print-overlay{position:absolute;inset:0;background:#fff;padding:0;display:block;}
-  .print-sheet{box-shadow:none;border-radius:0;max-width:100%;}
-  .no-print{display:none !important;}
-  .print-doc{padding:0 !important;}
-}
-`;
 
-function Av({ nom, color="#2563EB", size=38 }) {
+function Av({ nom, color="#152238", size=38 }) {
   return <div className="av" style={{width:size,height:size,background:color+"1A",color,border:"1.5px solid "+color+"33",fontSize:Math.round(size*.32)}}>{INI(nom)}</div>;
 }
 function PBar({ v, color, h=6 }) {
@@ -514,8 +379,6 @@ function AddrActions({ adresse, onCopy }) {
     </div>
   );
 }
-
-const METEO_PRESETS = ["☀️ Ensoleillé 22°C", "🌤 Nuageux 18°C", "🌧 Pluie 14°C", "💨 Vent fort 16°C", "❄️ Froid 5°C"];
 
 function Sheet({ title, sub, onClose, footer, children }) {
   return (
@@ -721,7 +584,7 @@ function FIncident({ chantiers, user, ctx, edit, onClose, onSave, onUpdate }) {
     : {chId:ctx&&ctx.chId?String(ctx.chId):"",type:"securite",desc:"",prio:1});
   const s=(k,v)=>setF(p=>({...p,[k]:v}));
   const ok=f.chId&&f.desc.trim();
-  const types=[{v:"securite",l:"Sécurité",e:"⚠️"},{v:"materiel",l:"Matériel cassé",e:"🔧"},{v:"retard",l:"Retard livraison",e:"📦"},{v:"manque",l:"Manque matériel",e:"📋"},{v:"autre",l:"Autre",e:"💬"}];
+  const types=[{v:"securite",l:"Sécurité"},{v:"materiel",l:"Matériel cassé"},{v:"retard",l:"Retard livraison"},{v:"manque",l:"Manque matériel"},{v:"autre",l:"Autre"}];
   const ctxLabel={chantiers:"depuis Chantiers",taches:"depuis Tâches",heures:"depuis Planning heures",punch:"depuis Punch list",commandes:"depuis Commandes",home:"depuis l'Accueil",planningEq:"depuis Planning équipe"}[ctx&&ctx.screen];
   return (
     <Sheet title={isEdit?"Modifier l'incident":"Signaler un incident"} sub={!isEdit&&ctxLabel?ctxLabel:undefined} onClose={onClose}
@@ -1377,8 +1240,9 @@ function FFacture({ chantiers, devis, onClose, onSave }) {
   );
 }
 
-function LoginScreen({ onLogin, initialMode = "login", onBackToLanding }) {
-  const [mode,setMode]=useState(initialMode === "signup" ? "signup" : "login");
+function LoginScreen({ onLogin, initialMode = "login", onBackToLanding, inviteToken = "" }) {
+  const inviteMode = !!inviteToken;
+  const [mode,setMode]=useState(inviteMode ? "signup" : (initialMode === "signup" ? "signup" : "login"));
   const [email,setEmail]=useState("");
   const [mdp,setMdp]=useState("");
   const [mdp2,setMdp2]=useState("");
@@ -1388,43 +1252,77 @@ function LoginScreen({ onLogin, initialMode = "login", onBackToLanding }) {
   const [info,setInfo]=useState("");
   const [load,setLoad]=useState(false);
   const [showMdp,setShowMdp]=useState(false);
+  const [invitePreview,setInvitePreview]=useState(null);
+  const [inviteLoad,setInviteLoad]=useState(!!inviteToken);
 
   useEffect(() => {
+    if (inviteMode) return;
     setMode(initialMode === "signup" ? "signup" : "login");
-  }, [initialMode]);
+  }, [initialMode, inviteMode]);
+
+  useEffect(() => {
+    if (!inviteToken || !isSupabaseConfigured) {
+      setInviteLoad(false);
+      return;
+    }
+    let cancelled = false;
+    setInviteLoad(true);
+    previewInvitation(inviteToken)
+      .then((p) => {
+        if (cancelled) return;
+        setInvitePreview(p);
+        if (p?.valid && p.email) setEmail(p.email);
+        if (!p?.valid) setErr(p?.error || "Invitation invalide");
+      })
+      .catch((e) => { if (!cancelled) setErr(e?.message || "Invitation invalide"); })
+      .finally(() => { if (!cancelled) setInviteLoad(false); });
+    return () => { cancelled = true; };
+  }, [inviteToken]);
 
   const login = async () => {
     setErr(""); setInfo(""); setLoad(true);
     const emailNorm = email.trim().toLowerCase();
-    if (DEMO_AUTH) {
-      const local = COMPTES.find(c => c.email === emailNorm && c.mdp === mdp);
-      if (local) { onLogin({ ...local, isLocal: true, chIds: local.chIds || [] }); setLoad(false); return; }
-    }
-    if (!isSupabaseConfigured) {
-      setErr("Connexion cloud indisponible. Utilisez un compte démo ou configurez Supabase.");
-      setLoad(false);
+    if (isSupabaseConfigured) {
+      try {
+        const appUser = inviteMode
+          ? await signInAndAcceptInvite(email, mdp, inviteToken)
+          : await signInWithEmail(email, mdp);
+        onLogin(appUser);
+      } catch (e) {
+        if (DEMO_AUTH) {
+          const local = DEMO_COMPTES.find(c => c.email === emailNorm && c.mdp === mdp);
+          if (local) { onLogin({ ...local, isLocal: true, chIds: local.chIds || [] }); setLoad(false); return; }
+        }
+        setErr(e?.message?.includes("invitation") ? e.message : "Email ou mot de passe incorrect");
+      } finally {
+        setLoad(false);
+      }
       return;
     }
-    try {
-      const appUser = await signInWithEmail(email, mdp);
-      onLogin(appUser);
-    } catch {
-      setErr("Email ou mot de passe incorrect");
-    } finally {
-      setLoad(false);
+    if (DEMO_AUTH) {
+      const local = DEMO_COMPTES.find(c => c.email === emailNorm && c.mdp === mdp);
+      if (local) { onLogin({ ...local, isLocal: true, chIds: local.chIds || [] }); setLoad(false); return; }
     }
+    setErr("Connexion cloud indisponible. Utilisez un compte démo ou configurez Supabase.");
+    setLoad(false);
   };
 
   const signup = async () => {
     setErr(""); setInfo(""); setLoad(true);
-    if (!nom.trim() || !entreprise.trim()) { setErr("Nom et entreprise requis"); setLoad(false); return; }
+    if (inviteMode) {
+      if (!nom.trim()) { setErr("Votre nom est requis"); setLoad(false); return; }
+    } else if (!nom.trim() || !entreprise.trim()) { setErr("Nom et entreprise requis"); setLoad(false); return; }
     if (mdp.length < 8) { setErr("Mot de passe : 8 caractères minimum"); setLoad(false); return; }
     if (mdp !== mdp2) { setErr("Les mots de passe ne correspondent pas"); setLoad(false); return; }
     if (!isSupabaseConfigured) { setErr("Inscription cloud indisponible"); setLoad(false); return; }
     try {
-      const { user, needsEmailConfirmation } = await signUpWithEmail({ email, password: mdp, nom, entreprise });
+      const { user, needsEmailConfirmation } = inviteMode
+        ? await signUpWithInvite({ email, password: mdp, nom, inviteToken })
+        : await signUpWithEmail({ email, password: mdp, nom, entreprise });
       if (needsEmailConfirmation) {
-        setInfo("Compte créé ! Vérifiez votre email pour confirmer, puis connectez-vous.");
+        setInfo(inviteMode
+          ? "Compte créé ! Confirmez votre email puis rouvrez le lien d'invitation pour rejoindre l'équipe."
+          : "Compte créé ! Vérifiez votre email pour confirmer, puis connectez-vous.");
         setMode("login");
       } else if (user) {
         onLogin(user);
@@ -1450,149 +1348,182 @@ function LoginScreen({ onLogin, initialMode = "login", onBackToLanding }) {
     }
   };
 
-  const quick=(c)=>{ if(!DEMO_AUTH) return; onLogin({ ...c, isLocal: true, chIds: c.chIds || [] }); };
+  const quick=async(c)=>{
+    if(inviteMode)return;
+    setErr(""); setInfo("");
+    if(isSupabaseConfigured){
+      setEmail(c.email); setMdp(c.mdp);
+      setLoad(true);
+      try{
+        const appUser=await signInWithEmail(c.email,c.mdp);
+        onLogin(appUser);
+      }catch{
+        if(DEMO_AUTH){
+          onLogin({ ...c, isLocal: true, chIds: c.chIds || [] });
+        }else{
+          setErr(`Compte démo indisponible (${c.email}). Exécutez npm run seed:users côté admin.`);
+        }
+      }finally{
+        setLoad(false);
+      }
+      return;
+    }
+    if(DEMO_AUTH){
+      onLogin({ ...c, isLocal: true, chIds: c.chIds || [] });
+    }
+  };
 
-  const demoRiches=COMPTES.filter(c=>!c.vierge);
-  const demoVierges=COMPTES.filter(c=>c.vierge);
-  const roleIco={admin:"👔",chef:"👷",employe:"🦺",client:"👤"};
+  const showDemoAccounts=!inviteMode&&DEMO_AUTH;
+
+  const demoRiches=DEMO_COMPTES.filter(c=>!c.vierge);
+  const demoVierges=DEMO_COMPTES.filter(c=>c.vierge);
   const roleLabel={admin:"Gérant",chef:"Chef de chantier",employe:"Compagnon",client:"Client MOA"};
+  const roleColor={admin:"#152238",chef:"#0e7490",employe:"#047857",client:"#b45309"};
 
   return (
-    <div style={{minHeight:"100vh",overflowY:"auto",background:"var(--bg)",display:"flex",flexDirection:"column"}}>
-      {/* Header */}
-      <div style={{padding:"40px 24px 32px",textAlign:"center",background:"var(--w)",borderBottom:"1px solid var(--g2)"}}>
-        {onBackToLanding&&(
-          <button type="button" onClick={onBackToLanding} style={{display:"inline-flex",alignItems:"center",gap:6,marginBottom:16,padding:"6px 12px",borderRadius:99,border:"1px solid var(--g2)",background:"var(--bg)",color:"var(--t3)",fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:"var(--f)"}}>
-            ← Retour au site
-          </button>
-        )}
-        <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:10,marginBottom:14}}>
-          <div style={{width:40,height:40,background:"var(--blue)",borderRadius:12,display:"flex",alignItems:"center",justifyContent:"center",boxShadow:"0 4px 14px rgba(37,99,235,.3)"}}>
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5" strokeLinecap="round"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+    <div className="auth-page">
+      <aside className="auth-brand">
+        <div className="auth-brand-inner">
+          <div style={{display:"flex",alignItems:"center",gap:10}}>
+            <div className="app-logo">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5" strokeLinecap="round"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+            </div>
+            <span style={{fontSize:20,fontWeight:800,letterSpacing:"-.03em"}}>BuildEasy</span>
           </div>
-          <span style={{fontSize:24,fontWeight:800,color:"var(--t1)",letterSpacing:"-.03em"}}>BuildEasy</span>
-        </div>
-        <div style={{fontSize:13,color:"var(--t3)"}}>Logiciel de gestion BTP</div>
-      </div>
-
-      <div style={{padding:"24px",maxWidth:480,margin:"0 auto",width:"100%",display:"flex",flexDirection:"column",gap:20}}>
-
-        {/* Connexion / Inscription */}
-        <div className="card" style={{padding:"20px"}}>
-          <div style={{display:"flex",gap:8,marginBottom:16}}>
-            {[{id:"login",l:"Connexion"},{id:"signup",l:"Créer un compte"}].map(t=>(
-              <button key={t.id} type="button" onClick={()=>{setMode(t.id);setErr("");setInfo("");}} style={{flex:1,padding:"10px",borderRadius:"var(--r2)",border:"1.5px solid "+(mode===t.id?"var(--blue)":"var(--g2)"),background:mode===t.id?"var(--blue-l)":"var(--w)",color:mode===t.id?"var(--blue)":"var(--t3)",fontWeight:700,fontSize:13,cursor:"pointer",fontFamily:"var(--f)"}}>{t.l}</button>
+          <h1>Le pilotage chantier, pensé pour le terrain.</h1>
+          <p>Devis, planning, équipes et suivi client — une seule application pour gérants, chefs, compagnons et maîtres d&apos;ouvrage.</p>
+          <div className="auth-features">
+            {["Chantiers & tâches en temps réel","Devis, factures & trésorerie","4 rôles avec permissions dédiées"].map(f=>(
+              <div key={f} className="auth-feature"><span>✓</span>{f}</div>
             ))}
           </div>
-
-          {mode==="signup"&&(
-            <>
-              <input className="inp" style={{marginBottom:10}} placeholder="Nom de l'entreprise" value={entreprise} onChange={e=>setEntreprise(e.target.value)}/>
-              <input className="inp" style={{marginBottom:10}} placeholder="Votre nom" value={nom} onChange={e=>setNom(e.target.value)}/>
-            </>
-          )}
-
-          <input className="inp" style={{marginBottom:10}} type="email" placeholder="Email" value={email} onChange={e=>setEmail(e.target.value)} onKeyDown={e=>e.key==="Enter"&&(mode==="signup"?signup():login())}/>
-          <div style={{position:"relative",marginBottom:mode==="signup"?10:err||info?10:14}}>
-            <input className="inp" type={showMdp?"text":"password"} placeholder="Mot de passe" value={mdp} onChange={e=>setMdp(e.target.value)} onKeyDown={e=>e.key==="Enter"&&(mode==="signup"?signup():login())} style={{paddingRight:44}}/>
-            <button type="button" onClick={()=>setShowMdp(!showMdp)} style={{position:"absolute",right:10,top:"50%",transform:"translateY(-50%)",background:"none",border:"none",cursor:"pointer",fontSize:16,color:"var(--t4)"}}>
-              {showMdp?"🙈":"👁"}
-            </button>
-          </div>
-
-          {mode==="signup"&&(
-            <input className="inp" style={{marginBottom:err||info?10:14}} type={showMdp?"text":"password"} placeholder="Confirmer le mot de passe" value={mdp2} onChange={e=>setMdp2(e.target.value)} onKeyDown={e=>e.key==="Enter"&&signup()}/>
-          )}
-
-          {err&&<div style={{padding:"8px 12px",background:"var(--err-l)",border:"1px solid var(--err-b)",borderRadius:"var(--r2)",fontSize:12,color:"var(--err)",fontWeight:600,marginBottom:12}}>{err}</div>}
-          {info&&<div style={{padding:"8px 12px",background:"var(--ok-l)",border:"1px solid #BBF7D0",borderRadius:"var(--r2)",fontSize:12,color:"var(--ok)",fontWeight:600,marginBottom:12}}>{info}</div>}
-
-          {mode==="login"?(
-            <>
-              <button className="btn btn-blue btn-fw" onClick={login} disabled={!email||!mdp||load}>
-                {load?"Connexion...":"Se connecter"}
-              </button>
-              <button type="button" className="btn btn-ghost btn-sm btn-fw" style={{marginTop:10}} onClick={forgot} disabled={!email||load}>
-                Mot de passe oublié ?
-              </button>
-            </>
-          ):(
-            <button className="btn btn-ok btn-fw" onClick={signup} disabled={!email||!mdp||!mdp2||!nom||!entreprise||load}>
-              {load?"Création...":"Créer mon compte"}
-            </button>
-          )}
-
-          {mode==="signup"&&<div style={{fontSize:11,color:"var(--t4)",marginTop:12,lineHeight:1.5}}>14 jours d'essai · Plan Starter · Données isolées par entreprise</div>}
         </div>
+      </aside>
 
-        {DEMO_AUTH&&(
-        <>
-        <div>
-          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
-            <div style={{flex:1,height:1,background:"var(--g2)"}}/>
-            <div style={{padding:"4px 12px",background:"var(--ok-l)",border:"1px solid #BBF7D0",borderRadius:99,fontSize:11,fontWeight:700,color:"var(--ok)",whiteSpace:"nowrap"}}>Comptes à donner aux prospects</div>
-            <div style={{flex:1,height:1,background:"var(--g2)"}}/>
+      <div className="auth-panel">
+        <div className="auth-panel-inner">
+          {onBackToLanding&&(
+            <button type="button" className="auth-back" onClick={onBackToLanding}>← Retour au site</button>
+          )}
+
+          <div className="auth-card card">
+            <div style={{marginBottom:6}}>
+              <div style={{fontSize:22,fontWeight:800,color:"var(--t1)",letterSpacing:"-.03em"}}>
+                {inviteMode ? "Rejoindre l'équipe" : (mode==="signup"?"Créer un compte":"Connexion")}
+              </div>
+              <div style={{fontSize:13,color:"var(--t3)",marginTop:4}}>
+                {inviteMode
+                  ? (inviteLoad ? "Chargement de l'invitation…" : invitePreview?.valid ? `${invitePreview.org_name} · ${ROLES[invitePreview.role]?.label || invitePreview.role}` : "Lien d'invitation")
+                  : (mode==="signup"?"15 jours d'essai · Plan Starter":"Accédez à votre espace BuildEasy")}
+              </div>
+            </div>
+
+            {!inviteMode ? (
+              <div className="auth-tabs">
+                {[{id:"login",l:"Connexion"},{id:"signup",l:"Créer un compte"}].map(t=>(
+                  <button key={t.id} type="button" className={"auth-tab"+(mode===t.id?" on":"")} onClick={()=>{setMode(t.id);setErr("");setInfo("");}}>{t.l}</button>
+                ))}
+              </div>
+            ) : (
+              <div className="auth-tabs">
+                {[{id:"signup",l:"Créer un compte"},{id:"login",l:"J'ai déjà un compte"}].map(t=>(
+                  <button key={t.id} type="button" className={"auth-tab"+(mode===t.id?" on":"")} onClick={()=>{setMode(t.id);setErr("");setInfo("");}}>{t.l}</button>
+                ))}
+              </div>
+            )}
+
+            {inviteMode&&invitePreview?.valid&&(
+              <div className="tag tag-blue" style={{display:"block",padding:"10px 12px",marginBottom:12,fontSize:12}}>
+                Vous avez été invité en tant que <strong>{ROLES[invitePreview.role]?.label || invitePreview.role}</strong> chez <strong>{invitePreview.org_name}</strong>.
+              </div>
+            )}
+
+            {mode==="signup"&&(
+              <>
+                {!inviteMode&&<input className="inp" style={{marginBottom:10}} placeholder="Nom de l'entreprise" value={entreprise} onChange={e=>setEntreprise(e.target.value)}/>}
+                <input className="inp" style={{marginBottom:10}} placeholder="Votre nom" value={nom} onChange={e=>setNom(e.target.value)}/>
+              </>
+            )}
+
+            <input className="inp" style={{marginBottom:10}} type="email" placeholder="Email professionnel" value={email} onChange={e=>setEmail(e.target.value)} onKeyDown={e=>e.key==="Enter"&&(mode==="signup"?signup():login())}/>
+            <div style={{position:"relative",marginBottom:mode==="signup"?10:err||info?10:14}}>
+              <input className="inp" type={showMdp?"text":"password"} placeholder="Mot de passe" value={mdp} onChange={e=>setMdp(e.target.value)} onKeyDown={e=>e.key==="Enter"&&(mode==="signup"?signup():login())} style={{paddingRight:44}}/>
+              <button type="button" onClick={()=>setShowMdp(!showMdp)} style={{position:"absolute",right:12,top:"50%",transform:"translateY(-50%)",background:"none",border:"none",cursor:"pointer",fontSize:11,fontWeight:600,color:"var(--t4)"}} aria-label={showMdp?"Masquer":"Afficher"}>
+                {showMdp?"Masquer":"Voir"}
+              </button>
+            </div>
+
+            {mode==="signup"&&(
+              <input className="inp" style={{marginBottom:err||info?10:14}} type={showMdp?"text":"password"} placeholder="Confirmer le mot de passe" value={mdp2} onChange={e=>setMdp2(e.target.value)} onKeyDown={e=>e.key==="Enter"&&signup()}/>
+            )}
+
+            {err&&<div className="tag tag-err" style={{display:"block",padding:"10px 12px",marginBottom:12,fontSize:12}}>{err}</div>}
+            {info&&<div className="tag tag-ok" style={{display:"block",padding:"10px 12px",marginBottom:12,fontSize:12}}>{info}</div>}
+
+            {mode==="login"?(
+              <>
+                <button className="btn btn-blue btn-fw" onClick={login} disabled={!email||!mdp||load||inviteLoad||(inviteMode&&!invitePreview?.valid)}>
+                  {load?"Connexion...":inviteMode?"Rejoindre l'équipe":"Se connecter"}
+                </button>
+                <button type="button" className="btn btn-ghost btn-sm btn-fw" style={{marginTop:10}} onClick={forgot} disabled={!email||load}>
+                  Mot de passe oublié ?
+                </button>
+              </>
+            ):(
+              <button className="btn btn-ok btn-fw" onClick={signup} disabled={!email||!mdp||!mdp2||!nom||(!inviteMode&&!entreprise)||load||inviteLoad||(inviteMode&&!invitePreview?.valid)}>
+                {load?"Création...":inviteMode?"Rejoindre l'équipe":"Créer mon compte"}
+              </button>
+            )}
           </div>
-          <div style={{display:"flex",flexDirection:"column",gap:8}}>
-            {demoVierges.map(c=>(
-              <div key={c.id} className="card tap" style={{padding:"14px 16px",cursor:"pointer",border:"1.5px solid #BBF7D0",background:"var(--ok-l)"}} onClick={()=>quick(c)}>
-                <div style={{display:"flex",alignItems:"center",gap:12}}>
-                  <div style={{width:40,height:40,borderRadius:"50%",background:"var(--ok)",color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",fontWeight:800,fontSize:15,flexShrink:0}}>
-                    {c.id-9}
-                  </div>
-                  <div style={{flex:1}}>
-                    <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:3}}>
-                      <span style={{fontSize:14,fontWeight:800,color:"var(--t1)"}}>{c.email}</span>
+
+          {showDemoAccounts&&(
+          <>
+          <div>
+            <div className="demo-divider"><span className="demo-pill tag-ok">Comptes prospects</span></div>
+            <div className="col gap8">
+              {demoVierges.map(c=>(
+                <div key={c.id} className="demo-card highlight-ok tap" onClick={()=>quick(c)}>
+                  <div className="row gap12">
+                    <Av nom={c.email.split("@")[0]} color="#047857" size={36}/>
+                    <div style={{flex:1}}>
+                      <div style={{fontSize:13,fontWeight:600,color:"var(--t1)",marginBottom:2}}>{c.email}</div>
+                      <span className="tag tag-ok">Gérant · vierge</span>
                     </div>
-                    <div style={{display:"flex",alignItems:"center",gap:6}}>
-                      <span style={{padding:"2px 8px",background:"var(--ok)",color:"#fff",borderRadius:99,fontSize:10,fontWeight:800}}>Gérant · Application vierge</span>
+                    <div style={{textAlign:"right",fontSize:12,color:"var(--t3)"}}>
+                      <div style={{fontWeight:600}}>buildeasy</div>
                     </div>
-                  </div>
-                  <div style={{textAlign:"right"}}>
-                    <div style={{fontSize:12,fontWeight:700,color:"var(--ok)"}}>Mot de passe</div>
-                    <div style={{fontSize:15,fontWeight:900,color:"var(--t1)",letterSpacing:".02em"}}>buildeasy</div>
                   </div>
                 </div>
-              </div>
-            ))}
+              ))}
+            </div>
+            <div style={{fontSize:11,color:"var(--t4)",textAlign:"center",marginTop:10,lineHeight:1.5}}>
+              Idéal pour laisser vos prospects explorer une application vierge.
+            </div>
           </div>
-          <div style={{fontSize:11,color:"var(--t4)",textAlign:"center",marginTop:8,lineHeight:1.5}}>
-            Ces comptes démarrent avec une application 100% vierge — idéal pour que vos prospects explorent librement depuis le premier chantier.
-          </div>
-        </div>
 
-        {/* Comptes démo riches — pour les présentations internes */}
-        <div>
-          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
-            <div style={{flex:1,height:1,background:"var(--g2)"}}/>
-            <div style={{padding:"4px 12px",background:"var(--blue-l)",border:"1px solid var(--blue-b)",borderRadius:99,fontSize:11,fontWeight:700,color:"var(--blue)",whiteSpace:"nowrap"}}>Démo enrichie — présentation interne</div>
-            <div style={{flex:1,height:1,background:"var(--g2)"}}/>
-          </div>
-          <div style={{display:"flex",flexDirection:"column",gap:8}}>
-            {demoRiches.map(c=>(
-              <div key={c.id} className="card tap" style={{padding:"14px 16px",cursor:"pointer"}} onClick={()=>quick(c)}>
-                <div style={{display:"flex",alignItems:"center",gap:12}}>
-                  <div style={{width:40,height:40,borderRadius:"50%",background:c.role==="admin"?"var(--blue)":c.role==="chef"?"var(--ok)":c.role==="employe"?"var(--warn)":"#7C3AED",color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,flexShrink:0}}>
-                    {roleIco[c.role]}
-                  </div>
-                  <div style={{flex:1}}>
-                    <div style={{fontSize:14,fontWeight:700,color:"var(--t1)",marginBottom:2}}>{c.nom}</div>
-                    <div style={{fontSize:12,color:"var(--t3)"}}>{roleLabel[c.role]||c.role} · {c.email}</div>
-                  </div>
-                  <div style={{textAlign:"right",flexShrink:0}}>
-                    <div style={{fontSize:11,color:"var(--t4)"}}>Mot de passe</div>
-                    <div style={{fontSize:13,fontWeight:700,color:"var(--t2)",fontFamily:"monospace"}}>{c.mdp}</div>
+          <div>
+            <div className="demo-divider"><span className="demo-pill tag-blue">Démo enrichie</span></div>
+            <div className="col gap8">
+              {demoRiches.map(c=>(
+                <div key={c.id} className="demo-card tap" onClick={()=>quick(c)}>
+                  <div className="row gap12">
+                    <Av nom={c.nom} color={roleColor[c.role]||"#152238"} size={36}/>
+                    <div style={{flex:1}}>
+                      <div style={{fontSize:13,fontWeight:600,color:"var(--t1)",marginBottom:2}}>{c.nom}</div>
+                      <div style={{fontSize:12,color:"var(--t3)"}}>{roleLabel[c.role]||c.role} · {c.email}</div>
+                    </div>
+                    <div style={{textAlign:"right",flexShrink:0,fontSize:12,fontFamily:"ui-monospace,monospace",color:"var(--t3)"}}>{c.mdp}</div>
                   </div>
                 </div>
-              </div>
-            ))}
+              ))}
+            </div>
           </div>
-        </div>
-        </>
-        )}
+          </>
+          )}
 
-        <div style={{textAlign:"center",fontSize:11,color:"var(--t4)",paddingBottom:20}}>
-          BuildEasy © 2026 · contact@buildeasy.eu
+          <div style={{textAlign:"center",fontSize:11,color:"var(--t4)",paddingBottom:24}}>
+            BuildEasy © 2026 · contact@buildeasy.eu
+          </div>
         </div>
       </div>
     </div>
@@ -1629,23 +1560,24 @@ function HomeScreen({ user, perms, data, onNav, onSheet, onUpdCh, onNotify }) {
   const tIco={visite:"👤",reunion:"📅",livraison:"📦",prospect:"💼",securite:"⛑️",autre:"📌"};
 
   return (
-    <div style={{paddingBottom:100,overflowY:"auto",height:"100%"}}>
-      <div style={{padding:"18px 20px 16px",background:"var(--w)",borderBottom:"1px solid var(--g2)"}}>
+    <div className="screen-body">
+      <div className="screen-hero">
         <div className="row">
           <div style={{display:"flex",alignItems:"center",gap:12}}>
-            <Av nom={user.nom} color={role.color} size={44}/>
-            <div><div style={{fontSize:16,fontWeight:700,color:"var(--t1)"}}>Bonjour, {user.nom.split(" ")[0]}</div><div style={{fontSize:12,color:"var(--t3)",marginTop:2}}>{role.label} · {new Date().toLocaleDateString("fr-FR",{weekday:"long",day:"numeric",month:"long"})}</div></div>
+            <Av nom={user.nom} color={role.color} size={40}/>
+            <div><div style={{fontSize:16,fontWeight:700,color:"var(--t1)",letterSpacing:"-.02em"}}>Bonjour, {user.nom.split(" ")[0]}</div><div style={{fontSize:12,color:"var(--t3)",marginTop:2}}>{role.label} · {new Date().toLocaleDateString("fr-FR",{weekday:"long",day:"numeric",month:"long"})}</div></div>
           </div>
-          {((perms.montants&&retards.length>0)||(perms.incidents&&incOuv.length>0))&&<div style={{padding:"5px 10px",background:"var(--err-l)",border:"1px solid var(--err-b)",borderRadius:"var(--r)"}}><span style={{fontSize:11,fontWeight:700,color:"var(--err)"}}>⚠ {(perms.montants?retards.length:0)+(perms.incidents?incOuv.length:0)} alerte{((perms.montants?retards.length:0)+(perms.incidents?incOuv.length:0))>1?"s":""}</span></div>}
+          {((perms.montants&&retards.length>0)||(perms.incidents&&incOuv.length>0))&&<span className="tag tag-err">{((perms.montants?retards.length:0)+(perms.incidents?incOuv.length:0))} alerte{((perms.montants?retards.length:0)+(perms.incidents?incOuv.length:0))>1?"s":""}</span>}
         </div>
       </div>
-      <div style={{padding:"18px 20px",display:"flex",flexDirection:"column",gap:20}}>
+      <div className="zone">
 
         {/* ── MA JOURNÉE — Résumé condensé pour gérant ET chef ── */}
         {(user.role==="admin"||user.role==="chef")&&(
           <div className="u0">
             <div className="sec">Ma journée</div>
-            <div className="card" style={{padding:"16px",borderLeft:"4px solid var(--blue)"}}>
+            <div className="panel">
+              <div className="panel-bd">
               {/* Agenda du jour */}
               {agendaToday.length>0?(
                 <div style={{marginBottom:12}}>
@@ -1660,7 +1592,7 @@ function HomeScreen({ user, perms, data, onNav, onSheet, onUpdCh, onNotify }) {
                 </div>
               ):<div style={{fontSize:13,color:"var(--t4)",marginBottom:12}}>Aucun rendez-vous prévu aujourd'hui</div>}
               {/* Résumé rapide */}
-              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>
+              <div className="kpi-grid">
                 {[
                   {l:"Chantiers actifs",v:actifs.length+"",c:"var(--blue)"},
                   {l:"Tâches urgentes", v:myTaches.filter(t=>t.prio===1).length+"",c:myTaches.filter(t=>t.prio===1).length>0?"var(--err)":"var(--ok)"},
@@ -1669,9 +1601,9 @@ function HomeScreen({ user, perms, data, onNav, onSheet, onUpdCh, onNotify }) {
                   {l:"Livraisons attendues",v:cmdEnCours.length+"",c:cmdEnCours.length>0?"var(--blue)":"var(--t4)"},
                   ...(perms.montants?[{l:"Factures en retard",v:retards.length+"",c:retards.length>0?"var(--err)":"var(--ok)"}]:[]),
                 ].map(m=>(
-                  <div key={m.l} style={{padding:"8px 10px",background:"var(--g1)",borderRadius:"var(--r)",border:"1px solid var(--g2)"}}>
-                    <div style={{fontSize:16,fontWeight:800,color:m.c,marginBottom:2}}>{m.v}</div>
-                    <div style={{fontSize:10,color:"var(--t4)"}}>{m.l}</div>
+                  <div key={m.l} className="kpi-cell">
+                    <div className="kpi-cell-val" style={{color:m.c}}>{m.v}</div>
+                    <div className="kpi-cell-lbl">{m.l}</div>
                   </div>
                 ))}
               </div>
@@ -1687,7 +1619,8 @@ function HomeScreen({ user, perms, data, onNav, onSheet, onUpdCh, onNotify }) {
                   <button className="btn btn-ghost btn-xs" style={{marginLeft:8}} onClick={()=>onNav("commandes")}>Voir →</button>
                 </div>
               )}
-              <button className="btn btn-ghost btn-sm" style={{marginTop:10}} onClick={()=>onNav("agenda")}>Voir l'agenda complet →</button>
+              <button className="btn btn-ghost btn-sm" style={{marginTop:10}} onClick={()=>onNav("agenda")}>Voir l'agenda complet</button>
+              </div>
             </div>
           </div>
         )}
@@ -1847,16 +1780,16 @@ function HomeScreen({ user, perms, data, onNav, onSheet, onUpdCh, onNotify }) {
         {/* ── Actions rapides ── */}
         <div className="u3">
           <div className="sec">Actions rapides</div>
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
-            {perms.rapport&&<div role="button" tabIndex={0} aria-label="Compte-rendu" className="card tap" style={{padding:"16px",cursor:"pointer"}} onClick={()=>onSheet("rapport")} onKeyDown={e=>(e.key==="Enter"||e.key===" ")&&(e.preventDefault(),onSheet("rapport"))}><div style={{fontSize:24,marginBottom:8}}>📋</div><div style={{fontSize:14,fontWeight:700,color:"var(--t1)",marginBottom:3}}>Compte-rendu</div><div style={{fontSize:12,color:"var(--t3)"}}>Rapport journalier</div></div>}
-            {perms.chat&&<div role="button" tabIndex={0} aria-label="Messagerie" className="card tap" style={{padding:"16px",cursor:"pointer"}} onClick={()=>onNav("chat")} onKeyDown={e=>(e.key==="Enter"||e.key===" ")&&(e.preventDefault(),onNav("chat"))}><div style={{fontSize:24,marginBottom:8}}>💬</div><div style={{fontSize:14,fontWeight:700,color:"var(--t1)",marginBottom:3}}>Messagerie</div><div style={{fontSize:12,color:"var(--t3)"}}>Chat chantier</div></div>}
-            {perms.gPunch&&<div role="button" tabIndex={0} aria-label="Réserves" className="card tap" style={{padding:"16px",cursor:"pointer"}} onClick={()=>onNav("punch")} onKeyDown={e=>(e.key==="Enter"||e.key===" ")&&(e.preventDefault(),onNav("punch"))}><div style={{fontSize:24,marginBottom:8}}>🔧</div><div style={{fontSize:14,fontWeight:700,color:"var(--t1)",marginBottom:3}}>Réserves</div><div style={{fontSize:12,color:"var(--t3)"}}>{punchOuv.length} ouvertes</div></div>}
-            {perms.creerCh&&<div role="button" tabIndex={0} aria-label="Nouveau chantier" className="card tap" style={{padding:"16px",cursor:"pointer"}} onClick={()=>onSheet("chantier")} onKeyDown={e=>(e.key==="Enter"||e.key===" ")&&(e.preventDefault(),onSheet("chantier"))}><div style={{fontSize:24,marginBottom:8}}>🏗</div><div style={{fontSize:14,fontWeight:700,color:"var(--t1)",marginBottom:3}}>Nouveau chantier</div><div style={{fontSize:12,color:"var(--t3)"}}>Créer un dossier</div></div>}
-            {perms.creerAv&&<div role="button" tabIndex={0} aria-label="Avenant" className="card tap" style={{padding:"16px",cursor:"pointer"}} onClick={()=>onSheet("avenant")} onKeyDown={e=>(e.key==="Enter"||e.key===" ")&&(e.preventDefault(),onSheet("avenant"))}><div style={{fontSize:24,marginBottom:8}}>📄</div><div style={{fontSize:14,fontWeight:700,color:"var(--t1)",marginBottom:3}}>Avenant</div><div style={{fontSize:12,color:"var(--t3)"}}>Travaux supplémentaires</div></div>}
-            {perms.montants&&<div role="button" tabIndex={0} aria-label="Nouveau devis" className="card tap" style={{padding:"16px",cursor:"pointer"}} onClick={()=>onSheet("devis")} onKeyDown={e=>(e.key==="Enter"||e.key===" ")&&(e.preventDefault(),onSheet("devis"))}><div style={{fontSize:24,marginBottom:8}}>📝</div><div style={{fontSize:14,fontWeight:700,color:"var(--t1)",marginBottom:3}}>Nouveau devis</div><div style={{fontSize:12,color:"var(--t3)"}}>Chiffrer un projet</div></div>}
-            {perms.heures&&<div role="button" tabIndex={0} aria-label="Saisir mes heures" className="card tap" style={{padding:"16px",cursor:"pointer"}} onClick={()=>onSheet("heure",monCh?{defaultChId:monCh.id}:undefined)} onKeyDown={e=>(e.key==="Enter"||e.key===" ")&&(e.preventDefault(),onSheet("heure",monCh?{defaultChId:monCh.id}:undefined))}><div style={{fontSize:24,marginBottom:8}}>⏱</div><div style={{fontSize:14,fontWeight:700,color:"var(--t1)",marginBottom:3}}>Saisir mes heures</div><div style={{fontSize:12,color:"var(--t3)"}}>Pointage du jour</div></div>}
-            {perms.heures&&<div role="button" tabIndex={0} aria-label="Planning heures" className="card tap" style={{padding:"16px",cursor:"pointer"}} onClick={()=>onNav("heures")} onKeyDown={e=>(e.key==="Enter"||e.key===" ")&&(e.preventDefault(),onNav("heures"))}><div style={{fontSize:24,marginBottom:8}}>📊</div><div style={{fontSize:14,fontWeight:700,color:"var(--t1)",marginBottom:3}}>Planning heures</div><div style={{fontSize:12,color:"var(--t3)"}}>Semaine équipe</div></div>}
-            <div role="button" tabIndex={0} aria-label="Agenda" className="card tap" style={{padding:"16px",cursor:"pointer"}} onClick={()=>onNav("agenda")} onKeyDown={e=>(e.key==="Enter"||e.key===" ")&&(e.preventDefault(),onNav("agenda"))}><div style={{fontSize:24,marginBottom:8}}>📅</div><div style={{fontSize:14,fontWeight:700,color:"var(--t1)",marginBottom:3}}>Agenda</div><div style={{fontSize:12,color:"var(--t3)"}}>{agendaToday.length} événement{agendaToday.length>1?"s":""} aujourd'hui</div></div>
+          <div className="action-grid">
+            {perms.rapport&&<QuickAction mod="rapports" title="Compte-rendu" sub="Rapport journalier" onClick={()=>onSheet("rapport")} onKeyDown={e=>(e.key==="Enter"||e.key===" ")&&(e.preventDefault(),onSheet("rapport"))}/>}
+            {perms.chat&&<QuickAction mod="messages" title="Messagerie" sub="Chat chantier" onClick={()=>onNav("chat")} onKeyDown={e=>(e.key==="Enter"||e.key===" ")&&(e.preventDefault(),onNav("chat"))}/>}
+            {perms.gPunch&&<QuickAction mod="reserves" title="Réserves" sub={punchOuv.length+" ouvertes"} onClick={()=>onNav("punch")} onKeyDown={e=>(e.key==="Enter"||e.key===" ")&&(e.preventDefault(),onNav("punch"))}/>}
+            {perms.creerCh&&<QuickAction mod="chantier" title="Nouveau chantier" sub="Créer un dossier" onClick={()=>onSheet("chantier")} onKeyDown={e=>(e.key==="Enter"||e.key===" ")&&(e.preventDefault(),onSheet("chantier"))}/>}
+            {perms.creerAv&&<QuickAction mod="avenant" title="Avenant" sub="Travaux supplémentaires" onClick={()=>onSheet("avenant")} onKeyDown={e=>(e.key==="Enter"||e.key===" ")&&(e.preventDefault(),onSheet("avenant"))}/>}
+            {perms.montants&&<QuickAction mod="devis" title="Nouveau devis" sub="Chiffrer un projet" onClick={()=>onSheet("devis")} onKeyDown={e=>(e.key==="Enter"||e.key===" ")&&(e.preventDefault(),onSheet("devis"))}/>}
+            {perms.heures&&<QuickAction mod="heures" title="Saisir mes heures" sub="Pointage du jour" onClick={()=>onSheet("heure",monCh?{defaultChId:monCh.id}:undefined)} onKeyDown={e=>(e.key==="Enter"||e.key===" ")&&(e.preventDefault(),onSheet("heure",monCh?{defaultChId:monCh.id}:undefined))}/>}
+            {perms.heures&&<QuickAction mod="situations" title="Planning heures" sub="Semaine équipe" onClick={()=>onNav("heures")} onKeyDown={e=>(e.key==="Enter"||e.key===" ")&&(e.preventDefault(),onNav("heures"))}/>}
+            <QuickAction mod="agenda" title="Agenda" sub={agendaToday.length+" événement"+(agendaToday.length>1?"s":"")+" aujourd'hui"} onClick={()=>onNav("agenda")} onKeyDown={e=>(e.key==="Enter"||e.key===" ")&&(e.preventDefault(),onNav("agenda"))}/>
           </div>
         </div>
       </div>
@@ -1902,7 +1835,7 @@ function ChantiersScreen({ user, perms, chantiers, taches, equipe, heures, comma
             {[{l:"Maître d'ouvrage",v:sel.client||"—",ico:"👤"},{l:"Téléphone",v:sel.tel||"—",ico:"📞",lien:"tel:"+sel.tel,copy:sel.tel},{l:"Adresse",v:sel.adresse||"—",ico:"📍",lien:sel.adresse?"https://maps.google.com/?q="+encodeURIComponent(sel.adresse):null,addr:sel.adresse},{l:"Heure de RDV",v:sel.rdv||"—",ico:"🕐"},{l:"Démarrage",v:sel.debut||"—",ico:"📅"},{l:"Fin contractuelle",v:sel.fin||"—",ico:"🏁"},{l:"Météo",v:sel.meteo||"—",ico:"🌤"},{l:"Corps d'état",v:sel.corps||"—",ico:"🔧"}].map(item=>(
               <div key={item.l} style={{padding:"10px 12px",background:"var(--g1)",borderRadius:"var(--r2)",border:"1px solid var(--g2)"}}>
                 <div style={{fontSize:10,color:"var(--t4)",textTransform:"uppercase",letterSpacing:".06em",marginBottom:3}}>{item.ico} {item.l}</div>
-                {item.lien&&!item.addr?<a href={item.lien} target={item.lien.startsWith("http")?"_blank":undefined} rel="noopener noreferrer" style={{textDecoration:"none"}}><div style={{fontSize:13,fontWeight:600,color:"var(--blue)"}}>{item.v}</div></a>:item.copy?<div style={{display:"flex",alignItems:"center",gap:6}}><a href={item.lien} style={{textDecoration:"none"}}><div style={{fontSize:13,fontWeight:600,color:"var(--blue)"}}>{item.v}</div></a><button type="button" className="btn btn-ghost btn-xs" onClick={()=>navigator.clipboard?.writeText(item.copy).then(()=>onNotify?.("Téléphone copié")).catch(()=>{})}>Copier</button></div>:<div style={{fontSize:13,fontWeight:600,color:"var(--t1)"}}>{item.v}</div>}
+                {item.lien&&!item.addr?(safeHref(item.lien)?<a href={safeHref(item.lien)} target={item.lien.startsWith("http")?"_blank":undefined} rel="noopener noreferrer" style={{textDecoration:"none"}}><div style={{fontSize:13,fontWeight:600,color:"var(--blue)"}}>{item.v}</div></a>:<div style={{fontSize:13,fontWeight:600,color:"var(--t1)"}}>{item.v}</div>):item.copy?<div style={{display:"flex",alignItems:"center",gap:6}}>{safeHref(item.lien)?<a href={safeHref(item.lien)} style={{textDecoration:"none"}}><div style={{fontSize:13,fontWeight:600,color:"var(--blue)"}}>{item.v}</div></a>:<div style={{fontSize:13,fontWeight:600,color:"var(--t1)"}}>{item.v}</div>}<button type="button" className="btn btn-ghost btn-xs" onClick={()=>navigator.clipboard?.writeText(item.copy).then(()=>onNotify?.("Téléphone copié")).catch(()=>{})}>Copier</button></div>:<div style={{fontSize:13,fontWeight:600,color:"var(--t1)"}}>{item.v}</div>}
                 {item.addr&&<AddrActions adresse={item.addr} onCopy={onNotify}/>}
               </div>
             ))}
@@ -2342,37 +2275,70 @@ function FinancesScreen({ user, perms, factures, chantiers, heures, equipe, comm
   );
 }
 
-function ChatScreen({ user, perms, messages, chantiers, onSend, onSheet, initialChId }) {
+function ChatScreen({ user, perms, messages, chantiers, onSend, onSendMedia, onIncoming, onSheet, initialChId, online }) {
   if(!perms.chat) return <div className="empty" style={{paddingTop:80}}><p style={{fontSize:14}}>Accès non disponible</p></div>;
   const myCh=(user.role==="admin"?chantiers:chantiers.filter(c=>chIdsOf(user).includes(c.id))).filter(c=>c.statut!=="livre");
   const [chId,setChId]=useState(()=>String(initialChId||myCh[0]?.id||""));
   useEffect(()=>{if(initialChId)setChId(String(initialChId));},[initialChId]);
   const [txt,setTxt]=useState("");
+  const [uploading,setUploading]=useState(false);
   const ref=useRef(null);
+  const fileRef=useRef(null);
   const msgs=messages.filter(m=>m.chId===parseInt(chId));
   const ch=chantiers.find(c=>c.id===parseInt(chId));
   const rc={admin:"#2563EB",chef:"#0891B2",employe:"#059669",client:"#D97706"};
   useEffect(()=>{ ref.current?.scrollIntoView({behavior:"smooth"}); },[msgs.length,chId]);
-  const send=()=>{const t=txt.trim();if(!t||!chId)return;onSend({chId:parseInt(chId),auteur:user.nom,role:user.role,txt:t,h:new Date().toLocaleTimeString("fr-FR",{hour:"2-digit",minute:"2-digit"}),d:new Date().toLocaleDateString("fr-FR",{day:"2-digit",month:"2-digit"})});setTxt("");};
+
+  useEffect(()=>{
+    if(!isSupabaseConfigured||!supabase||!chId||!onIncoming)return;
+    const cid=parseInt(chId,10);
+    const channel=supabase
+      .channel(`messages-ch-${cid}`)
+      .on("postgres_changes",{event:"INSERT",schema:"public",table:"messages",filter:`chantier_id=eq.${cid}`},(payload)=>{
+        onIncoming(messageFromDbRow(payload.new));
+      })
+      .subscribe();
+    return()=>{supabase.removeChannel(channel);};
+  },[chId,onIncoming]);
+
+  const nowFields=()=>({
+    h:new Date().toLocaleTimeString("fr-FR",{hour:"2-digit",minute:"2-digit"}),
+    d:new Date().toLocaleDateString("fr-FR",{day:"2-digit",month:"2-digit"}),
+  });
+
+  const send=()=>{const t=txt.trim();if(!t||!chId)return;onSend({chId:parseInt(chId),auteur:user.nom,role:user.role,txt:t,...nowFields()});setTxt("");};
+
+  const onPickFile=async(e)=>{
+    const file=e.target.files?.[0];
+    e.target.value="";
+    if(!file||!chId||!onSendMedia)return;
+    setUploading(true);
+    try{await onSendMedia(parseInt(chId),file,user);}finally{setUploading(false);}
+  };
+
   return (
     <div style={{display:"flex",flexDirection:"column",height:"100%"}}>
       <div style={{padding:"12px 20px",background:"var(--w)",borderBottom:"1px solid var(--g2)",flexShrink:0}}>
         <select className="inp" style={{height:40,fontSize:13}} value={chId} onChange={e=>setChId(e.target.value)}>{myCh.map(c=><option key={c.id} value={c.id}>{c.nom}</option>)}</select>
         {ch&&<div style={{fontSize:11,color:"var(--t4)",marginTop:6}}>📍 {ch.adresse}</div>}
+        {!online&&<div style={{fontSize:11,color:"var(--warn)",marginTop:6,fontWeight:600}}>Hors ligne — messages et fichiers enregistrés localement</div>}
       </div>
       <div style={{flex:1,overflowY:"auto",padding:"16px 20px",display:"flex",flexDirection:"column",gap:12}}>
-        {msgs.length===0&&<div className="empty"><div style={{fontSize:40}}>💬</div><p style={{fontSize:13}}>Aucun message sur ce chantier</p></div>}
+        {msgs.length===0&&<div className="empty"><div style={{fontSize:40}}>💬</div><p style={{fontSize:13}}>Aucun message sur ce chantier</p><p style={{fontSize:12,color:"var(--t4)",marginTop:4}}>Texte, photos, PDF ou vidéos</p></div>}
         {msgs.map((m,i)=>{
           const isMe=m.auteur===user.nom;
           const col=rc[m.role]||"#94A3B8";
           const showD=i===0||m.d!==msgs[i-1]?.d;
+          const isPending=m.pending||(typeof m.id==="number"&&m.id>1e12)||Boolean(m.mediaClientId);
           return (
-            <div key={m.id}>
+            <div key={m.clientId||m.id}>
               {showD&&<div style={{textAlign:"center",margin:"4px 0"}}><span style={{fontSize:10,fontWeight:600,color:"var(--t4)",background:"var(--g1)",padding:"3px 10px",borderRadius:99,border:"1px solid var(--g2)"}}>{m.d}</span></div>}
               <div style={{display:"flex",flexDirection:"column",alignItems:isMe?"flex-end":"flex-start",gap:3}}>
                 {!isMe&&<span style={{fontSize:10,fontWeight:700,color:col,marginLeft:4}}>{m.auteur} · {ROLES[m.role]?.label}</span>}
-                <div style={{maxWidth:"78%",padding:"10px 13px",fontSize:14,lineHeight:1.5,borderRadius:isMe?"14px 14px 4px 14px":"14px 14px 14px 4px",background:isMe?"var(--blue)":"var(--w)",color:isMe?"#fff":"var(--t1)",border:isMe?"none":"1px solid var(--g2)",boxShadow:"var(--sh)"}}>{m.txt}</div>
-                <span style={{fontSize:10,color:"var(--t4)",margin:isMe?"0 4px 0 0":"0 0 0 4px"}}>{m.h}</span>
+                <div style={{maxWidth:"78%",padding:"10px 13px",fontSize:14,lineHeight:1.5,borderRadius:isMe?"14px 14px 4px 14px":"14px 14px 14px 4px",background:isMe?"var(--blue)":"var(--w)",color:isMe?"#fff":"var(--t1)",border:isMe?"none":"1px solid var(--g2)",boxShadow:"var(--sh)",opacity:isPending?0.85:1}}>
+                  <ChatMessageBody message={m} isMe={isMe}/>
+                </div>
+                <span style={{fontSize:10,color:"var(--t4)",margin:isMe?"0 4px 0 0":"0 0 0 4px",display:"flex",alignItems:"center",gap:4}}>{m.h}{isPending&&<span title="En attente de sync">⏳</span>}</span>
               </div>
             </div>
           );
@@ -2381,6 +2347,8 @@ function ChatScreen({ user, perms, messages, chantiers, onSend, onSheet, initial
       </div>
       {perms.msg&&<div style={{padding:"12px 16px",borderTop:"1px solid var(--g2)",display:"flex",gap:8,background:"var(--w)",paddingBottom:"calc(12px + var(--sb) + 72px)"}}>
         {perms.incidents&&<button className="btn btn-out btn-sq" style={{height:42,width:42,flexShrink:0,borderColor:"var(--err-b)"}} onClick={()=>onSheet&&onSheet("incident")} title="Signaler un incident"><span style={{fontSize:18}}>⚠️</span></button>}
+        <input ref={fileRef} type="file" accept="image/*,video/*,application/pdf" style={{display:"none"}} onChange={onPickFile}/>
+        <button type="button" className="btn btn-out btn-sq" style={{height:42,width:42,flexShrink:0,opacity:uploading?0.6:1}} disabled={uploading||!chId} onClick={()=>fileRef.current?.click()} title="Photo, PDF ou vidéo"><span style={{fontSize:18}}>{uploading?"⏳":"📎"}</span></button>
         <input className="inp" style={{flex:1,height:42,fontSize:14}} placeholder="Message…" value={txt} onChange={e=>setTxt(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();send();}}}/>
         <button className="btn btn-blue btn-sq" style={{height:42,width:42}} onClick={send} disabled={!txt.trim()||!chId}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg></button>
       </div>}
@@ -2803,8 +2771,13 @@ function RapportsScreen({ user, rapports, chantiers, onPrint }) {
   );
 }
 
-function PlusScreen({ user, perms, data, onNav, onLogout, onUpdEq, themeId, setThemeId, onResetDemo }) {
+function PlusScreen({ user, perms, data, onNav, onLogout, onUpdEq, themeId, setThemeId, onResetDemo, billing, onRefreshBilling, onNotify }) {
   const { equipe, rapports, chantiers, incidents, taches, devis, commandes, heures, conges, agenda, punch, avenants, factures, plan, planId, setPlanId, hasFeat } = data;
+  const [usageStats,setUsageStats]=useState(null);
+  useEffect(()=>{
+    if(!user?.isSupabase||user?.role!=="admin"){ setUsageStats(null); return; }
+    getOrgUsageStats().then(setUsageStats).catch(()=>setUsageStats(null));
+  },[user?.isSupabase,user?.role,user?.id]);
   const scoped = (rows, key = "chId") => filterByChAccess(user, rows, key);
   const myCh = visibleChantiers(user, chantiers);
   const incOuv = scoped(incidents).filter(i=>i.statut==="ouvert");
@@ -2816,77 +2789,92 @@ function PlusScreen({ user, perms, data, onNav, onLogout, onUpdEq, themeId, setT
   const cmdEnCours = scoped(commandes||[]).filter(c=>c.statut==="commandee"||c.statut==="attente");
   const congesAtt = (conges||[]).filter(c=>c.statut==="attente");
   const HF = hasFeat || (()=>true); // fallback si plan absent
+  const billingStatus=billing?.status||"trialing";
+  const billingLabel=BILLING_STATUS_LABELS[billingStatus]||billingStatus;
+  const stripeLive=isStripeConfigured&&user.isSupabase;
+  const onChoosePlan=async(pid)=>{
+    if(stripeLive&&pid!==planId){
+      try{await startStripeCheckout(pid);}catch(e){alert(e?.message||"Erreur Stripe");}
+      return;
+    }
+    setPlanId&&setPlanId(pid);
+  };
+  const onCheckout=async()=>{
+    try{await startStripeCheckout(planId);}catch(e){alert(e?.message||"Erreur Stripe");}
+  };
+  const onPortal=async()=>{
+    try{await startStripePortal();}catch(e){alert(e?.message||"Erreur Stripe");}
+  };
 
   const mods = [
-    perms.montants    && { id:"devis",      ico:"📝", l:"Devis",               sub:devisAtt.length>0 ? devisAtt.length+" en attente" : "Tous traités",         badge:devisAtt.length,  bt:devisAtt.length>0?"warn":"ok",  feat:"devis" },
-    (perms.montants || perms.creerCmd) && { id:"commandes",  ico:"📦", l:"Commandes",            sub:cmdEnCours.length>0 ? cmdEnCours.length+" en cours" : "Tout livré",         badge:cmdEnCours.length, bt:cmdEnCours.length>0?"warn":"ok", feat:"commandes" },
-    perms.equipe      && { id:"planningEq", ico:"👷", l:"Planning équipe",      sub:"Affectation semaine",                                                      badge:0, feat:"planningEq" },
-    perms.equipe      && { id:"agenda",     ico:"📅", l:"Agenda",               sub:"Rendez-vous et événements",                                                badge:0, feat:"agenda" },
-    perms.equipe      && { id:"conges",     ico:"🏖", l:"Congés",               sub:congesAtt.length>0 ? congesAtt.length+" à valider" : "Aucune demande",      badge:congesAtt.length, bt:congesAtt.length>0?"warn":"ok", feat:"conges" },
-    perms.montants    && { id:"clients",    ico:"👤", l:"Fichier clients / CRM",sub:"Contacts et prospects",                                                    badge:0, feat:"clients" },
-    perms.equipe      && { id:"fournisseurs",ico:"📦", l:"Annuaire fournisseurs", sub:(data.fournisseurs||[]).length+" contacts · Appel direct",                  badge:0, feat:"agenda" },
-    perms.avenants    && { id:"avenants",   ico:"📄", l:"Avenants",             sub:avAtt.length>0 ? avAtt.length+" en attente" : "Tous signés",                badge:avAtt.length,    bt:avAtt.length>0?"warn":"ok", feat:"avenants" },
-    perms.heures      && { id:"heures",     ico:"\u23F1",    l:"Planning heures",      sub:hNonVal.length>0 ? hNonVal.length+" à valider" : "Tout validé",             badge:hNonVal.length,  bt:hNonVal.length>0?"warn":"ok", feat:"heures" },
-    perms.punch       && { id:"punch",      ico:"🔧", l:"Punch list",           sub:punchOuv.length>0 ? punchOuv.length+" ouverte(s)" : "Tout clos",            badge:punchOuv.length, bt:punchOuv.length>0?"err":"ok", feat:"punch" },
-    perms.finances    && { id:"finances",   ico:"💶", l:"Finances",             sub:retards.length>0 ? retards.length+" en retard" : "À jour",                  badge:retards.length,  bt:retards.length>0?"err":"ok", feat:"factures" },
-    perms.situations  && { id:"situations", ico:"📊", l:"Situations de travaux",sub:"Facturation progressive",                                                  badge:0, feat:"situations" },
-    perms.rapports    && { id:"rapports",   ico:"📋", l:"Comptes-rendus",       sub:rapports.length+" rapport"+(rapports.length>1?"s":""),                      badge:0, feat:"rapports" },
-    perms.incidents   && { id:"incidents",  ico:"\u26A0",    l:"Incidents",            sub:incOuv.length>0 ? incOuv.length+" non traité(s)" : "Aucun incident",        badge:incOuv.length,   bt:incOuv.length>0?"err":"ok", urgent:incOuv.length>0, feat:"incidents" },
+    perms.montants    && { id:"devis",      l:"Devis",               sub:devisAtt.length>0 ? devisAtt.length+" en attente" : "Tous traités",         badge:devisAtt.length,  bt:devisAtt.length>0?"warn":"ok",  feat:"devis" },
+    (perms.montants || perms.creerCmd) && { id:"commandes",  l:"Commandes",            sub:cmdEnCours.length>0 ? cmdEnCours.length+" en cours" : "Tout livré",         badge:cmdEnCours.length, bt:cmdEnCours.length>0?"warn":"ok", feat:"commandes" },
+    perms.equipe      && { id:"planningEq", l:"Planning équipe",      sub:"Affectation semaine",                                                      badge:0, feat:"planningEq" },
+    perms.equipe      && { id:"agenda",     l:"Agenda",               sub:"Rendez-vous et événements",                                                badge:0, feat:"agenda" },
+    perms.equipe      && { id:"conges",     l:"Congés",               sub:congesAtt.length>0 ? congesAtt.length+" à valider" : "Aucune demande",      badge:congesAtt.length, bt:congesAtt.length>0?"warn":"ok", feat:"conges" },
+    perms.montants    && { id:"clients",    l:"Fichier clients / CRM",sub:"Contacts et prospects",                                                    badge:0, feat:"clients" },
+    perms.equipe      && { id:"fournisseurs", l:"Annuaire fournisseurs", sub:(data.fournisseurs||[]).length+" contacts",                  badge:0, feat:"agenda" },
+    perms.avenants    && { id:"avenants",   l:"Avenants",             sub:avAtt.length>0 ? avAtt.length+" en attente" : "Tous signés",                badge:avAtt.length,    bt:avAtt.length>0?"warn":"ok", feat:"avenants" },
+    perms.heures      && { id:"heures",     l:"Planning heures",      sub:hNonVal.length>0 ? hNonVal.length+" à valider" : "Tout validé",             badge:hNonVal.length,  bt:hNonVal.length>0?"warn":"ok", feat:"heures" },
+    perms.punch       && { id:"punch",      l:"Punch list",           sub:punchOuv.length>0 ? punchOuv.length+" ouverte(s)" : "Tout clos",            badge:punchOuv.length, bt:punchOuv.length>0?"err":"ok", feat:"punch" },
+    perms.finances    && { id:"finances",   l:"Finances",             sub:retards.length>0 ? retards.length+" en retard" : "À jour",                  badge:retards.length,  bt:retards.length>0?"err":"ok", feat:"factures" },
+    perms.situations  && { id:"situations", l:"Situations de travaux",sub:"Facturation progressive",                                                  badge:0, feat:"situations" },
+    perms.rapports    && { id:"rapports",   l:"Comptes-rendus",       sub:rapports.length+" rapport"+(rapports.length>1?"s":""),                      badge:0, feat:"rapports" },
+    perms.incidents   && { id:"incidents",  l:"Incidents",            sub:incOuv.length>0 ? incOuv.length+" non traité(s)" : "Aucun incident",        badge:incOuv.length,   bt:incOuv.length>0?"err":"ok", urgent:incOuv.length>0, feat:"incidents" },
   ].filter(Boolean).map(m=>({...m, lock:!HF(m.feat)}));
 
   return (
-    <div style={{paddingBottom:100,overflowY:"auto",height:"100%"}}>
-      <div style={{padding:"20px",display:"flex",flexDirection:"column",gap:20}}>
+    <div className="screen-body">
+      <div className="zone">
 
         {user.role==="admin"&&(
           <div>
             <div className="sec">Résumé</div>
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8}}>
+            <div className="panel">
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:1,background:"var(--g2)"}}>
               {[
                 {l:"Chantiers", v:myCh.filter(c=>c.statut==="actif").length, c:"var(--blue)"},
                 {l:"Tâches",    v:scoped(taches).filter(t=>t.statut!=="fait").length,      c:scoped(taches).filter(t=>t.prio===1&&t.statut!=="fait").length>0?"var(--err)":"var(--t1)"},
                 {l:"Équipe",    v:equipe.filter(m=>m.statut==="present").length+"/"+equipe.length, c:"var(--ok)"},
               ].map((m,i)=>(
-                <div key={i} className="card" style={{padding:"10px",textAlign:"center"}}>
-                  <div style={{fontSize:20,fontWeight:800,color:m.c,marginBottom:2}}>{m.v}</div>
-                  <div style={{fontSize:10,color:"var(--t4)",textTransform:"uppercase"}}>{m.l}</div>
+                <div key={i} style={{padding:"12px",textAlign:"center",background:"var(--w)"}}>
+                  <div style={{fontSize:18,fontWeight:700,color:m.c,marginBottom:2}}>{m.v}</div>
+                  <div style={{fontSize:10,color:"var(--t4)",textTransform:"uppercase",letterSpacing:".04em"}}>{m.l}</div>
                 </div>
               ))}
+              </div>
             </div>
           </div>
         )}
 
         <div>
           <div className="sec">Modules</div>
-          <div className="col gap6">
+          <div className="panel">
             {mods.map(item=>{
               const badgeColor = item.bt==="err"?"var(--err)":item.bt==="warn"?"var(--warn)":"var(--blue)";
               if(item.lock){
                 return (
-                  <div key={item.id} className="card" style={{padding:"14px 16px",display:"flex",alignItems:"center",gap:14,opacity:.7,border:"1px dashed var(--g3)",background:"var(--g1)",cursor:"pointer"}} onClick={()=>{const el=document.getElementById("mon-abonnement");if(el)el.scrollIntoView({behavior:"smooth"});}}>
-                    <div style={{width:42,height:42,background:"var(--g2)",borderRadius:"var(--r2)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:20,flexShrink:0,filter:"grayscale(1)"}}>{item.ico}</div>
-                    <div style={{flex:1}}>
-                      <div style={{fontSize:14,fontWeight:600,color:"var(--t2)"}}>{item.l}</div>
-                      <div style={{fontSize:11,color:"var(--t4)",marginTop:2}}>Disponible avec le plan Pro</div>
+                  <div key={item.id} className="list-row" style={{opacity:.75,cursor:"pointer"}} onClick={()=>{const el=document.getElementById("mon-abonnement");if(el)el.scrollIntoView({behavior:"smooth"});}}>
+                    <div className="list-row-ico" style={{filter:"grayscale(1)"}}><ModIcon name={item.id} /></div>
+                    <div className="list-row-body">
+                      <div className="list-row-title" style={{color:"var(--t2)"}}>{item.l}</div>
+                      <div className="list-row-sub">Plan Pro requis</div>
                     </div>
-                    <div style={{display:"flex",alignItems:"center",gap:6,padding:"4px 10px",background:"var(--blue-l)",border:"1px solid var(--blue-b)",borderRadius:99}}>
-                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="var(--blue)" strokeWidth="2.5"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
-                      <span style={{fontSize:10,fontWeight:700,color:"var(--blue)"}}>PRO</span>
-                    </div>
+                    <span className="tag tag-blue">PRO</span>
                   </div>
                 );
               }
               return (
-                <div key={item.id} role="button" tabIndex={0} aria-label={item.l} className="card tap" style={{padding:"14px 16px",display:"flex",alignItems:"center",gap:14,cursor:"pointer",border:item.urgent?"1.5px solid var(--err-b)":"1px solid var(--g2)"}} onClick={()=>onNav(item.id)} onKeyDown={e=>(e.key==="Enter"||e.key===" ")&&(e.preventDefault(),onNav(item.id))}>
-                  <div style={{width:42,height:42,background:item.urgent?"var(--err-l)":"var(--blue-l)",borderRadius:"var(--r2)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:20,flexShrink:0,position:"relative"}}>
-                    {item.ico}
+                <div key={item.id} role="button" tabIndex={0} aria-label={item.l} className={"list-row"+(item.urgent?" list-row-urgent":"")} onClick={()=>onNav(item.id)} onKeyDown={e=>(e.key==="Enter"||e.key===" ")&&(e.preventDefault(),onNav(item.id))}>
+                  <div className="list-row-ico" style={{background:item.urgent?"var(--err-l)":"var(--g1)"}}>
+                    <ModIcon name={item.id} />
                     {item.badge>0&&(
-                      <div style={{position:"absolute",top:-4,right:-4,minWidth:18,height:18,borderRadius:9,background:badgeColor,color:"#fff",fontSize:10,fontWeight:800,display:"flex",alignItems:"center",justifyContent:"center",padding:"0 4px",border:"2px solid var(--w)"}}>{item.badge}</div>
+                      <div style={{position:"absolute",top:-3,right:-3,minWidth:16,height:16,borderRadius:8,background:badgeColor,color:"#fff",fontSize:9,fontWeight:700,display:"flex",alignItems:"center",justifyContent:"center",padding:"0 3px",border:"1.5px solid var(--w)"}}>{item.badge}</div>
                     )}
                   </div>
-                  <div style={{flex:1}}>
-                    <div style={{fontSize:14,fontWeight:600,color:item.urgent?"var(--err)":"var(--t1)"}}>{item.l}</div>
-                    <div style={{fontSize:12,color:item.urgent?"var(--err)":"var(--t3)",marginTop:2}}>{item.sub}</div>
+                  <div className="list-row-body">
+                    <div className="list-row-title" style={{color:item.urgent?"var(--err)":"var(--t1)"}}>{item.l}</div>
+                    <div className="list-row-sub" style={{color:item.urgent?"var(--err)":"var(--t3)"}}>{item.sub}</div>
                   </div>
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--g4)" strokeWidth="2" strokeLinecap="round"><polyline points="9 18 15 12 9 6"/></svg>
                 </div>
@@ -2894,6 +2882,10 @@ function PlusScreen({ user, perms, data, onNav, onLogout, onUpdEq, themeId, setT
             })}
           </div>
         </div>
+
+        {user.role==="admin"&&!user.isLocal&&isSupabaseConfigured&&(
+          <TeamPanel user={user} plan={plan} onNotify={onNotify}/>
+        )}
 
         {perms.equipe&&(
           <div>
@@ -2945,25 +2937,25 @@ function PlusScreen({ user, perms, data, onNav, onLogout, onUpdEq, themeId, setT
         {user.role==="admin"&&plan&&(
           <div id="mon-abonnement">
             <div className="sec">Mon abonnement</div>
-            <div className="card" style={{padding:"18px",border:"1.5px solid var(--blue-b)",background:"var(--blue-l)"}}>
-              <div className="row" style={{marginBottom:14}}>
+            <div className="panel">
+              <div className="panel-hd row">
                 <div>
-                  <div style={{display:"flex",alignItems:"center",gap:8}}>
-                    <span style={{fontSize:17,fontWeight:800,color:"var(--t1)"}}>{plan.nom}</span>
-                    <span style={{padding:"2px 9px",background:"var(--blue)",color:"#fff",fontSize:10,fontWeight:800,borderRadius:99,textTransform:"uppercase"}}>Actif</span>
-                  </div>
-                  <div style={{fontSize:12,color:"var(--t3)",marginTop:3}}>{plan.desc}</div>
+                  <span style={{fontWeight:700}}>{plan.nom}</span>
+                  <span className="tag tag-blue" style={{marginLeft:8}}>{billingLabel}</span>
                 </div>
-                <div style={{textAlign:"right"}}>
-                  <div style={{fontSize:22,fontWeight:800,color:"var(--blue)",letterSpacing:"-.02em"}}>{plan.prix}€</div>
-                  <div style={{fontSize:10,color:"var(--t4)"}}>/mois HT</div>
-                </div>
+                <div style={{fontWeight:700,color:"var(--blue)"}}>{plan.prix}€<span style={{fontSize:11,color:"var(--t4)",fontWeight:500}}>/mois</span></div>
               </div>
+              <div className="panel-bd">
+              <div style={{fontSize:13,color:"var(--t3)",marginBottom:12}}>{plan.desc}</div>
+              {billing?.current_period_end&&<div style={{fontSize:12,color:"var(--t4)",marginBottom:12}}>Renouvellement : {new Date(billing.current_period_end).toLocaleDateString("fr-FR")}</div>}
               {/* Jauges de limites */}
               {(() => {
-                const nbUsers=equipe.length;
+                const nbMembers=usageStats?.members ?? equipe.length;
+                const nbPending=usageStats?.pendingInvites ?? 0;
+                const nbUsers=nbMembers+nbPending;
+                const limU=usageStats?.limit ?? plan.maxUsers;
                 const nbChActifs=chantiers.filter(c=>c.statut==="actif").length;
-                const limU=plan.maxUsers, limC=plan.maxChantiers;
+                const limC=plan.maxChantiers;
                 const pctU=limU===Infinity?0:Math.min(100,Math.round(nbUsers/limU*100));
                 const pctC=limC===Infinity?0:Math.min(100,Math.round(nbChActifs/limC*100));
                 const Row=({label,used,lim,pct})=>(
@@ -2975,19 +2967,18 @@ function PlusScreen({ user, perms, data, onNav, onLogout, onUpdEq, themeId, setT
                     {lim!==Infinity&&<div style={{height:6,background:"var(--g2)",borderRadius:99,overflow:"hidden"}}><div style={{height:"100%",width:pct+"%",background:pct>=100?"var(--err)":pct>=80?"var(--warn)":"var(--blue)",borderRadius:99,transition:"width .3s"}}/></div>}
                   </div>
                 );
-                return (<div style={{background:"var(--w)",borderRadius:"var(--r2)",padding:"14px",marginBottom:12}}>
+                return (<div style={{background:"var(--g1)",borderRadius:"var(--r)",padding:"12px",marginBottom:12,border:"1px solid var(--g2)"}}>
                   <Row label="Utilisateurs" used={nbUsers} lim={limU} pct={pctU}/>
                   <Row label="Chantiers actifs" used={nbChActifs} lim={limC} pct={pctC}/>
                 </div>);
               })()}
-              {/* Sélecteur de plan (démo) */}
-              <div style={{fontSize:11,color:"var(--t4)",marginBottom:8,textTransform:"uppercase",letterSpacing:".06em",fontWeight:700}}>Changer de formule</div>
+              <div className="sec" style={{marginBottom:8}}>{stripeLive?"Formules":"Formules (démo)"}</div>
               <div style={{display:"flex",gap:6}}>
                 {["starter","pro","entreprise"].map(pid=>{
                   const p=PLANS[pid];
                   const active=planId===pid;
                   return (
-                    <button key={pid} onClick={()=>setPlanId&&setPlanId(pid)} style={{flex:1,padding:"10px 6px",borderRadius:"var(--r2)",border:active?"1.5px solid var(--blue)":"1.5px solid var(--g2)",background:active?"var(--blue)":"var(--w)",cursor:"pointer",fontFamily:"var(--f)",transition:"all .15s"}}>
+                    <button key={pid} onClick={()=>onChoosePlan(pid)} style={{flex:1,padding:"10px 6px",borderRadius:"var(--r2)",border:active?"1.5px solid var(--blue)":"1.5px solid var(--g2)",background:active?"var(--blue)":"var(--w)",cursor:"pointer",fontFamily:"var(--f)",transition:"all .15s"}}>
                       <div style={{fontSize:12,fontWeight:800,color:active?"#fff":"var(--t1)"}}>{p.nom}</div>
                       <div style={{fontSize:10,color:active?"rgba(255,255,255,.8)":"var(--t4)",marginTop:1}}>{p.prix}€/mois</div>
                     </button>
@@ -2995,26 +2986,13 @@ function PlusScreen({ user, perms, data, onNav, onLogout, onUpdEq, themeId, setT
                 })}
               </div>
               <div style={{fontSize:10,color:"var(--t4)",marginTop:10,textAlign:"center"}}>
-                {isStripeConfigured ? (
+                {stripeLive ? (
                   <div style={{display:"flex",flexDirection:"column",gap:8,marginTop:8}}>
-                    <button type="button" className="btn btn-blue btn-sm btn-fw" onClick={async()=>{
-                      const url=stripeCheckoutUrl(planId);
-                      if(!url)return;
-                      const {data:{session}}=await supabase.auth.getSession();
-                      const r=await fetch(url,{headers:{Authorization:`Bearer ${session?.access_token}`}});
-                      const j=await r.json();
-                      if(j.url)window.location.href=j.url;
-                    }}>S'abonner via Stripe</button>
-                    <button type="button" className="btn btn-ghost btn-sm btn-fw" onClick={async()=>{
-                      const url=stripePortalUrl();
-                      if(!url)return;
-                      const {data:{session}}=await supabase.auth.getSession();
-                      const r=await fetch(url,{headers:{Authorization:`Bearer ${session?.access_token}`}});
-                      const j=await r.json();
-                      if(j.url)window.location.href=j.url;
-                    }}>Gérer mon abonnement</button>
+                    <button type="button" className="btn btn-blue btn-sm btn-fw" onClick={onCheckout}>S'abonner via Stripe</button>
+                    <button type="button" className="btn btn-ghost btn-sm btn-fw" onClick={onPortal}>Gérer mon abonnement</button>
                   </div>
-                ) : "Démo — configurez Stripe (voir supabase/STRIPE.md)"}
+                ) : "Configurez Stripe (voir supabase/STRIPE.md)"}
+              </div>
               </div>
             </div>
           </div>
@@ -3029,7 +3007,7 @@ function PlusScreen({ user, perms, data, onNav, onLogout, onUpdEq, themeId, setT
                   <span style={{background:th.swatch[0]}}/>
                   <span style={{background:th.swatch[1]}}/>
                 </div>
-                <div style={{fontSize:13,fontWeight:700,color:"var(--t1)"}}>{th.emoji} {th.name}</div>
+                <div style={{fontSize:13,fontWeight:600,color:"var(--t1)"}}>{th.name}</div>
                 <div style={{fontSize:11,color:"var(--t3)",marginTop:2}}>{th.desc}</div>
               </button>
             ))}
@@ -3714,7 +3692,7 @@ function FournisseursScreen({ user, perms, fournisseurs, commandes, onAdd, onEdi
                     <span style={{padding:"2px 8px",background:"var(--g1)",border:"1px solid var(--g2)",borderRadius:99,fontSize:10,fontWeight:600,color:"var(--t3)"}}>{catLabel[f.cat]||f.cat}</span>
                   </div>
                   {nc>0&&<div style={{fontSize:12,color:"var(--t3)",marginBottom:6}}>📦 {nc} commande{nc>1?"s":""} passée{nc>1?"s":""}</div>}
-                  {f.url&&<a href={f.url} target="_blank" rel="noopener noreferrer" style={{fontSize:11,color:"var(--blue)",textDecoration:"none"}}>🌐 Site web →</a>}
+                  {f.url&&safeExternalHref(f.url)&&<a href={safeExternalHref(f.url)} target="_blank" rel="noopener noreferrer" style={{fontSize:11,color:"var(--blue)",textDecoration:"none"}}>🌐 Site web →</a>}
                 </div>
               </div>
               <div style={{display:"flex",gap:8,marginTop:12}}>
@@ -3812,12 +3790,8 @@ function IncidentActions({ inc, commandes, equipe, user, onNav, onSheet, onUpdIn
   const chefContact=equipe?equipe.find(m=>m.fn&&m.fn.toLowerCase().includes("chef")):null;
   const conducteur=equipe?equipe.find(m=>m.fn&&(m.fn.toLowerCase().includes("conducteur")||m.fn.toLowerCase().includes("gérant"))):null;
 
-  const BtnCall=({label,tel,color,icon})=>(
-    <a href={"tel:"+tel.replace(/\s/g,"")} style={{display:"flex",flex:1,flexDirection:"column",alignItems:"center",gap:5,padding:"12px 6px",borderRadius:"var(--r2)",background:color+"18",border:"1.5px solid "+color+"40",cursor:"pointer",textDecoration:"none",minWidth:0}}>
-      <span style={{fontSize:22}}>{icon}</span>
-      <span style={{fontSize:11,fontWeight:800,color:color,letterSpacing:"-.01em"}}>{tel}</span>
-      <span style={{fontSize:9,color:"var(--t3)",textAlign:"center",lineHeight:1.3}}>{label}</span>
-    </a>
+  const BtnCall=({label,tel,color})=>(
+    <CallTile label={label} tel={tel} color={color} />
   );
 
   // Contenu selon type
@@ -4019,6 +3993,29 @@ function AppMobile({ user, onLogout, themeId, setThemeId }) {
   const role=ROLES[user.role];
   const perms=PERMS[user.role];
   const isLocal=!!user.isLocal||!user.isSupabase;
+  const [billing,setBilling]=useState(null);
+  const refreshBilling=useCallback(async()=>{
+    if(!user.orgId||!isSupabaseConfigured)return;
+    try{setBilling(await fetchBillingSubscription(user.orgId));}catch{setBilling(null);}
+  },[user.orgId]);
+  useEffect(()=>{refreshBilling();},[refreshBilling]);
+  useEffect(()=>{
+    if(billing?.plan_id)setPlanIdRaw(billing.plan_id);
+  },[billing?.plan_id]);
+  useEffect(()=>{
+    const params=new URLSearchParams(window.location.search);
+    const checkout=params.get("checkout");
+    if(!checkout)return;
+    params.delete("checkout");
+    const qs=params.toString();
+    window.history.replaceState({}, "", window.location.pathname+(qs?`?${qs}`:""));
+    if(checkout==="success"){
+      refreshBilling();
+      alert("Paiement confirmé — votre abonnement sera actif sous quelques secondes.");
+    }else if(checkout==="cancel"){
+      alert("Paiement annulé.");
+    }
+  },[refreshBilling]);
   const empty=!!user.vierge;
   const demo=d=>empty?[]:d;
   const defaults=useMemo(()=>({
@@ -4058,8 +4055,15 @@ function AppMobile({ user, onLogout, themeId, setThemeId }) {
   const [agenda,setAgenda]=useState(hydrated.agenda);
   const [notes,setNotes]=useState(hydrated.notes);
   const [fournisseurs,setFournisseurs]=useState(hydrated.fournisseurs);
-  const [planId,setPlanIdRaw]=useState(()=>(user.isSupabase?user.planId:null)||localStorage.getItem("be_plan")||user.planId||"pro");
-  const setPlanId=id=>{if(!user.isSupabase)localStorage.setItem("be_plan",id);setPlanIdRaw(id);};
+  const [planId,setPlanIdRaw]=useState(()=>{
+    if(user.isSupabase) return user.planId || "starter";
+    return localStorage.getItem("be_plan")||user.planId||"pro";
+  });
+  const setPlanId=id=>{
+    if(user.isSupabase&&isStripeConfigured()) return;
+    if(!user.isSupabase) localStorage.setItem("be_plan",id);
+    setPlanIdRaw(id);
+  };
 
   useEffect(()=>{
     if(isLocal||(hydrated._persisted&&!hydrated._cloudPrimary)) return;
@@ -4074,13 +4078,17 @@ function AppMobile({ user, onLogout, themeId, setThemeId }) {
         }else{
           const data=await loadAppDataForUi();
           if(cancelled)return;
-          setChantiers(data.chantiers);setTaches(data.taches);setHeures(data.heures);
-          setCommandes(data.commandes);setDevis(data.devis);setIncidents(data.incidents);
-          setFactures(data.factures);setClients(data.clients);setEquipe(data.equipe);
-          setRapports(data.rapports);setMessages(data.messages);setAvenants(data.avenants);
-          setPunch(data.punch);setSituations(data.situations);setPlanningEq(data.planningEq);
-          setConges(data.conges);setAgenda(data.agenda);setNotes(data.notes);
-          setFournisseurs(data.fournisseurs.length?data.fournisseurs:hydrated.fournisseurs);
+          const equipeMerged=await loadEquipeWithAccounts(data.equipe);
+          const richDemo=!user.vierge&&DEMO_ACCOUNT_EMAILS.has(String(user.email||"").toLowerCase());
+          const useEmbeddedRich=richDemo&&data.chantiers.length===0;
+          const src=useEmbeddedRich?defaults:data;
+          setChantiers(src.chantiers);setTaches(src.taches);setHeures(src.heures);
+          setCommandes(src.commandes);setDevis(src.devis);setIncidents(src.incidents);
+          setFactures(src.factures);setClients(src.clients);setEquipe(useEmbeddedRich?src.equipe:equipeMerged);
+          setRapports(src.rapports);setMessages(src.messages);setAvenants(src.avenants);
+          setPunch(src.punch);setSituations(src.situations);setPlanningEq(src.planningEq);
+          setConges(src.conges);setAgenda(src.agenda);setNotes(src.notes);
+          setFournisseurs(src.fournisseurs.length?src.fournisseurs:hydrated.fournisseurs);
         }
         if(user.planId)setPlanIdRaw(user.planId);
         if(!cancelled)setSbReady(true);
@@ -4127,6 +4135,10 @@ function AppMobile({ user, onLogout, themeId, setThemeId }) {
   const [sheetOpts,setSheetOpts]=useState(null);
   const [toast,setToast]=useState("");
   const [online,setOnline]=useState(()=>typeof navigator!=="undefined"?navigator.onLine:true);
+  const [pendingSync,setPendingSync]=useState(()=>cloud.getPendingSyncCount(user));
+  const [pwaUpdate,setPwaUpdate]=useState(()=>typeof window!=="undefined"&&Boolean(window.__BE_PWA_UPDATE__));
+  const settersRef=useRef({});
+  settersRef.current={setChantiers,setTaches,setHeures,setCommandes,setDevis,setIncidents,setFactures,setClients,setEquipe,setRapports,setMessages,setAvenants,setPunch,setSituations,setConges,setAgenda,setNotes,setFournisseurs};
   const notify=useCallback(msg=>{setToast(msg);setTimeout(()=>setToast(""),2200);},[]);
   const rememberCh=useCallback(chId=>{if(chId)saveLastChId(user,chId);},[user]);
   const resolveDefaultChId=useCallback(()=>String(sheetOpts?.defaultChId||ctxChId||loadLastChId(user)||""),[sheetOpts,ctxChId,user]);
@@ -4141,6 +4153,41 @@ function AppMobile({ user, onLogout, themeId, setThemeId }) {
     window.addEventListener("offline",off);
     return()=>{window.removeEventListener("online",on);window.removeEventListener("offline",off);};
   },[]);
+
+  useEffect(()=>{
+    if(typeof window==="undefined")return;
+    if(window.__BE_PWA_UPDATE__)setPwaUpdate(true);
+    if(sessionStorage.getItem("be_pwa_ready")&&!sessionStorage.getItem("be_pwa_toast_shown")){
+      sessionStorage.setItem("be_pwa_toast_shown","1");
+      notify("Application disponible hors ligne");
+    }
+  },[notify]);
+
+  useEffect(()=>{
+    cloud.configureOfflineGate({
+      online,
+      user,
+      onQueued:(n)=>{setPendingSync(n);notify("Enregistré hors ligne — sync à la reconnexion");},
+    });
+    setPendingSync(cloud.getPendingSyncCount(user));
+  },[online,user,notify]);
+
+  useEffect(()=>{
+    if(!online||!cloud.shouldCloudSync(user)||!sbReady)return;
+    let cancelled=false;
+    (async()=>{
+      const remaps=await cloud.flushOfflineQueue(user);
+      if(cancelled)return;
+      setPendingSync(cloud.getPendingSyncCount(user));
+      for(const r of remaps)applyOfflineRemap(r,settersRef.current);
+      if(remaps.length>0)notify(`${remaps.length} modification(s) synchronisée(s)`);
+      try{
+        const data=await loadAppDataForUi();
+        if(!cancelled)setMessages(m=>mergeMessages(m,data.messages));
+      }catch{/* garde cache local */}
+    })();
+    return()=>{cancelled=true;};
+  },[online,user,sbReady,notify]);
   const plan=PLANS[planId]||PLANS.pro;
   const hasFeat=f=>plan.feats.includes(f);
   const data={chantiers,taches,factures,equipe,rapports,messages,avenants,heures,punch,incidents,situations,devis,commandes,planningEq,conges,agenda,clients,notes,fournisseurs,plan,planId,setPlanId,hasFeat};
@@ -4151,11 +4198,44 @@ function AppMobile({ user, onLogout, themeId, setThemeId }) {
     setRapports(p=>[...p,row]);
     if(cloud.shouldCloudSync(user)) cloud.cloudInsertRapport(row,user).catch(()=>{});
   };
-  const sendMsg=m=>{
-    const row={id:Date.now(),chId:parseInt(m.chId),auteur:m.auteur,role:m.role,txt:m.txt,h:m.h,d:m.d};
+  const sendMsg=useCallback((m)=>{
+    const clientId=m.clientId||`msg_${Date.now()}_${Math.random().toString(36).slice(2,6)}`;
+    const needsUpload=Boolean(m.mediaClientId);
+    const row={
+      id:Date.now(),chId:parseInt(m.chId),auteur:m.auteur,role:m.role,txt:m.txt||"",h:m.h,d:m.d,
+      type:m.type||"text",attachments:m.attachments||[],mediaClientId:m.mediaClientId||null,
+      localPreview:m.localPreview||null,clientId,pending:cloud.shouldCloudSync(user)&&(!online||needsUpload),
+    };
     setMessages(p=>[...p,row]);
-    if(cloud.shouldCloudSync(user)) cloud.cloudInsertMessage(row,user).then(created=>setMessages(p=>p.map(x=>x.id===row.id?{...x,...created}:x))).catch(()=>{});
-  };
+    if(cloud.shouldCloudSync(user))cloud.cloudInsertMessage(row,user).then(created=>{
+      if(created)setMessages(p=>p.map(x=>x.id===row.id?{...x,...created,pending:false,localPreview:null,mediaClientId:null}:x));
+    });
+  },[user,online]);
+
+  const sendMediaMsg=useCallback(async(chId,file,sender)=>{
+    const kind=detectMediaType(file.type);
+    const limit=MEDIA_LIMITS[kind]||MEDIA_LIMITS.pdf;
+    if(file.size>limit){
+      notify(`Fichier trop volumineux (max ${Math.round(limit/1024/1024)} Mo)`);
+      return;
+    }
+    const mediaClientId=`med_${Date.now()}_${Math.random().toString(36).slice(2,8)}`;
+    await saveMediaBlob({clientId:mediaClientId,messageTempId:Date.now(),chId,name:file.name,mime:file.type,size:file.size,blob:file});
+    const localPreview=URL.createObjectURL(file);
+    sendMsg({
+      chId,auteur:sender.nom,role:sender.role,txt:file.name,
+      h:new Date().toLocaleTimeString("fr-FR",{hour:"2-digit",minute:"2-digit"}),
+      d:new Date().toLocaleDateString("fr-FR",{day:"2-digit",month:"2-digit"}),
+      type:kind,mediaClientId,localPreview,
+    });
+  },[sendMsg,notify]);
+
+  const onIncomingMessage=useCallback((msg)=>{
+    setMessages(prev=>{
+      if(prev.some(x=>x.id===msg.id||(msg.clientId&&x.clientId===msg.clientId)))return prev;
+      return [...prev,msg];
+    });
+  },[]);
   const addAv=f=>{
     const row={id:Date.now(),...f,ref:f.ref||"AV-"+String(Date.now()).slice(-3),statut:"attente",dc:f.dc||new Date().toLocaleDateString("fr-FR"),ds:"",par:""};
     setAvenants(p=>[...p,row]);
@@ -4362,7 +4442,9 @@ function AppMobile({ user, onLogout, themeId, setThemeId }) {
     return (
       <div className="fab">
         {perms.incidents&&<>
-          <button className="fab-r" onClick={()=>{setIncCtx({screen,chId:ctxChId||undefined});setEditInc(null);openSheet("incident");}} title={incLabel}>⚠</button>
+          <button className="fab-r" onClick={()=>{setIncCtx({screen,chId:ctxChId||undefined});setEditInc(null);openSheet("incident");}} title={incLabel} aria-label={incLabel}>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+          </button>
           <div className="fab-lbl">{incLabel}</div>
         </>}
         {act&&<button className="fab-b" onClick={()=>openSheet(act,ctxChId?{defaultChId:ctxChId}:null)} title="Créer"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></button>}
@@ -4381,7 +4463,7 @@ function AppMobile({ user, onLogout, themeId, setThemeId }) {
       case "chantiers":  return <ChantiersScreen  user={user} perms={perms} chantiers={chantiers} taches={taches} equipe={equipe} heures={heures} commandes={commandes} notes={notes} onSave={saveC} onNav={navTo} onAddNote={onAddNote} onDelNote={onDelNote} onNotify={notify}/>;
       case "taches":     return <TachesScreen     user={user} perms={perms} taches={taches} chantiers={chantiers} equipe={equipe} onEditT={editT} onSheet={openSheet} initialChFilter={ctxChId}/>;
       case "finances":   return <FinancesScreen   user={user} perms={perms} factures={factures} chantiers={chantiers} heures={heures} equipe={equipe} commandes={commandes} onSheet={openSheet} onChangeStatut={onChangeFactureStatut} onPrint={setPrintDoc}/>;
-      case "chat":       return <ChatScreen       user={user} perms={perms} messages={messages} chantiers={chantiers} onSend={sendMsg} onSheet={openSheet} initialChId={ctxChId}/>;
+      case "chat":       return <ChatScreen       user={user} perms={perms} messages={messages} chantiers={chantiers} onSend={sendMsg} onSendMedia={sendMediaMsg} onIncoming={onIncomingMessage} onSheet={openSheet} initialChId={ctxChId} online={online}/>;
       case "avenants":   return <AvenantsScreen   user={user} perms={perms} avenants={avenants} chantiers={chantiers} onValider={valAv} onSheet={openSheet}/>;
       case "heures":     return <HeuresScreen     user={user} perms={perms} heures={heures} chantiers={chantiers} equipe={equipe} onValider={valH} onSheet={openSheet} onPrint={setPrintDoc}/>;
       case "punch":      return <PunchScreen      user={user} perms={perms} punch={punch} chantiers={chantiers} onUpdate={updP}/>;
@@ -4395,7 +4477,7 @@ function AppMobile({ user, onLogout, themeId, setThemeId }) {
       case "agenda":     return <AgendaScreen     user={user} perms={perms} agenda={agenda} chantiers={chantiers} equipe={equipe} onSheet={openSheet} onDel={onDelAgenda}/>;
       case "clients":    return <ClientsScreen    user={user} perms={perms} clients={clients} onSheet={openSheet}/>;
       case "fournisseurs":return <FournisseursScreen user={user} perms={perms} fournisseurs={fournisseurs} commandes={commandes} onAdd={onAddFournisseur} onEdit={onEditFournisseur} onDel={onDelFournisseur}/>;
-      case "plus":       return <PlusScreen       user={user} perms={perms} data={data} onNav={setScreen} onLogout={onLogout} onUpdEq={onUpdEq} themeId={themeId} setThemeId={setThemeId} onResetDemo={resetDemo}/>;
+      case "plus":       return <PlusScreen       user={user} perms={perms} data={data} onNav={setScreen} onLogout={onLogout} onUpdEq={onUpdEq} themeId={themeId} setThemeId={setThemeId} onResetDemo={resetDemo} billing={billing} onRefreshBilling={refreshBilling} onNotify={notify}/>;
       default: return null;
     }
   };
@@ -4417,8 +4499,11 @@ function AppMobile({ user, onLogout, themeId, setThemeId }) {
   })():[];
 
   if(!sbReady) return (
-    <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:"var(--bg)",flexDirection:"column",gap:12}}>
-      <div style={{fontSize:15,fontWeight:700,color:"var(--t2)"}}>Chargement des données…</div>
+    <div className="app-loading">
+      <div className="app-logo" style={{width:48,height:48,borderRadius:14}}>
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5" strokeLinecap="round"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+      </div>
+      <div className="app-loading-text">Chargement des données…</div>
     </div>
   );
   if(sbErr) return (
@@ -4431,25 +4516,37 @@ function AppMobile({ user, onLogout, themeId, setThemeId }) {
 
   return (
     <div style={{height:"100vh",display:"flex",flexDirection:"column",overflow:"hidden",background:"var(--bg)"}}>
-      <div style={{background:"var(--w)",borderBottom:"1px solid var(--g2)",paddingTop:"var(--st)",paddingLeft:20,paddingRight:20,paddingBottom:12,flexShrink:0,boxShadow:"0 1px 4px rgba(0,0,0,.05)"}}>
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",paddingTop:14}}>
+      <header className="app-header">
+        <div className="app-header-inner">
           <div style={{display:"flex",alignItems:"center",gap:10}}>
-            <div style={{width:32,height:32,background:"var(--hdr-ico)",borderRadius:9,display:"flex",alignItems:"center",justifyContent:"center"}}>
+            <div className="app-logo">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5" strokeLinecap="round"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
             </div>
-            <span style={{fontSize:16,fontWeight:800,letterSpacing:"-.02em",color:"var(--t1)"}}>BuildEasy</span>
-            <span title={online?(savedAt?"En ligne · sauvegardé":"En ligne"):"Hors ligne — données locales"} style={{width:8,height:8,borderRadius:"50%",background:online?"var(--ok)":"var(--warn)",marginLeft:6,flexShrink:0,display:"inline-block"}}/>
+            <span className="app-title">BuildEasy</span>
+            <span title={online?(pendingSync>0?`${pendingSync} en attente de sync`:savedAt?"En ligne · sauvegardé":"En ligne"):"Hors ligne — mode local"} style={{width:8,height:8,borderRadius:"50%",background:online?(pendingSync>0?"var(--warn)":"var(--ok)"):"var(--warn)",marginLeft:4,flexShrink:0,display:"inline-block"}}/>
           </div>
-          <div style={{display:"flex",alignItems:"center",gap:7}}>
-            <button onClick={()=>setShowSearch(true)} style={{width:32,height:32,borderRadius:8,background:"var(--g1)",border:"1px solid var(--g2)",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center"}}>
+          <div style={{display:"flex",alignItems:"center",gap:8}}>
+            <button type="button" className="app-icon-btn" onClick={()=>setShowSearch(true)} aria-label="Rechercher">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--t3)" strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
             </button>
-            {perms.incidents&&<button onClick={()=>setShowSOS(true)} style={{width:32,height:32,borderRadius:8,background:"var(--err-l)",border:"1px solid var(--err-b)",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",fontWeight:800,fontSize:14,color:"var(--err)",fontFamily:"var(--f)"}} title="Urgences &amp; contacts rapides">SOS</button>}
-            {(retards>0||incOuv>0)&&<div style={{padding:"4px 10px",background:"var(--err-l)",border:"1px solid var(--err-b)",borderRadius:"var(--r)",fontSize:11,fontWeight:700,color:"var(--err)"}}>⚠ {retards+incOuv}</div>}
-            <div style={{padding:"5px 10px",background:role.color+"15",border:"1px solid "+role.color+"33",borderRadius:"var(--r)"}}><span style={{fontSize:11,fontWeight:800,color:role.color}}>{role.abbr}</span></div>
+            {perms.incidents&&<button type="button" className="app-icon-btn" onClick={()=>setShowSOS(true)} style={{background:"var(--err-l)",borderColor:"var(--err-b)",fontWeight:800,fontSize:13,color:"var(--err)"}} title="Urgences &amp; contacts rapides">SOS</button>}
+            {(retards>0||incOuv>0)&&<span className="tag tag-err">{retards+incOuv}</span>}
+            <span className="app-role-badge" style={{background:role.color+"15",border:"1px solid "+role.color+"33",color:role.color}}>{role.abbr}</span>
           </div>
         </div>
-      </div>
+      </header>
+      {pwaUpdate&&(
+        <div style={{flexShrink:0,padding:"10px 16px",background:"var(--blue-l)",borderBottom:"1px solid var(--blue-b)",display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,fontSize:12}}>
+          <span style={{color:"var(--blue)",fontWeight:600}}>Mise à jour BuildEasy disponible</span>
+          <button type="button" className="btn btn-blue btn-sm" onClick={()=>window.__BE_SKIP_WAITING__?.()}>Mettre à jour</button>
+        </div>
+      )}
+      {cloud.shouldCloudSync(user)&&(!online||pendingSync>0)&&(
+        <div style={{flexShrink:0,padding:"8px 16px",background:"var(--warn-l)",borderBottom:"1px solid var(--warn-b)",fontSize:12,fontWeight:600,color:"var(--warn)",textAlign:"center"}}>
+          {!online?"Mode hors ligne — vos actions sont enregistrées localement":"Synchronisation en cours"}
+          {pendingSync>0&&` · ${pendingSync} modification${pendingSync>1?"s":""} en attente`}
+        </div>
+      )}
       <div style={{flex:1,overflow:"hidden",display:"flex",flexDirection:"column"}}>
         {perms.incidents&&screen!=="incidents"&&screen!=="chat"&&screen!=="plus"&&screen!=="home"&&(
           <div style={{flexShrink:0,overflowY:"auto",maxHeight:"30%"}}>
@@ -4590,19 +4687,12 @@ function AppMobile({ user, onLogout, themeId, setThemeId }) {
       {sheet==="facture"   &&perms.montants   &&<FFacture chantiers={chantiers} devis={devis} onClose={closeSheet} onSave={onAddFacture}/>}
       {sheet==="situation" &&perms.montants   &&<FSituation chantiers={chantiers} onClose={closeSheet} onSave={onSaveSituation}/>}
       {sheet==="heure"     &&perms.heures     &&<FHeures chantiers={chantiers} equipe={equipe} user={user} heures={heures} defaultChId={resolveDefaultChId()} onRememberCh={rememberCh} onClose={closeSheet} onSave={onAddHeure}/>}
-      {toast&&<div style={{position:"fixed",bottom:"calc(80px + var(--sb))",left:"50%",transform:"translateX(-50%)",padding:"10px 18px",background:"var(--t1)",color:"#fff",borderRadius:"var(--r2)",fontSize:13,fontWeight:600,zIndex:9999,boxShadow:"var(--sh-lg)",pointerEvents:"none"}}>{toast}</div>}
+      {toast&&<div className="toast-banner">{toast}</div>}
     </div>
   );
 }
 
-const Ico=({c})=><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">{c}</svg>;
-const IcoHome=()=><Ico c={<><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></>}/>;
-const IcoBuild=()=><Ico c={<><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v2"/></>}/>;
-const IcoTask=()=><Ico c={<><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></>}/>;
-const IcoChat=()=><Ico c={<path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/>}/>;
-const IcoMore=()=><Ico c={<><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></>}/>;
-
-export default function App({ initialAuthMode = "login", onBackToLanding }) {
+export default function App({ initialAuthMode = "login", inviteToken = "", onBackToLanding }) {
   const [user,setUser]=useState(null);
   const [themeId,setThemeId]=useState(()=>localStorage.getItem("be_theme")||"ocean");
 
@@ -4631,8 +4721,7 @@ export default function App({ initialAuthMode = "login", onBackToLanding }) {
 
   return (
     <>
-      <style>{CSS}</style>
-      {!user?<LoginScreen onLogin={setUser} initialMode={initialAuthMode} onBackToLanding={onBackToLanding}/>:<AppMobile key={user.id} user={user} onLogout={handleLogout} themeId={themeId} setThemeId={setThemeId}/>}
+      {!user?<LoginScreen onLogin={setUser} initialMode={initialAuthMode} inviteToken={inviteToken} onBackToLanding={onBackToLanding}/>:<AppMobile key={user.id} user={user} onLogout={handleLogout} themeId={themeId} setThemeId={setThemeId}/>}
     </>
   );
 }

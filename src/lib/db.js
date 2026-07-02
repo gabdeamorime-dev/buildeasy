@@ -65,6 +65,7 @@ const mapFacture = (r) => ({
 
 const mapMessage = (r) => ({
   id: r.id, chantierId: r.chantier_id, auteur: r.auteur, role: r.role ?? '', texte: r.texte, heure: r.heure ?? '', date: r.date ?? '',
+  type: r.type ?? 'text', attachments: Array.isArray(r.attachments) ? r.attachments : [], clientId: r.client_id ?? null,
 })
 
 const mapAvenant = (r) => ({
@@ -177,6 +178,16 @@ export async function fetchOrgPlan(orgId) {
   return data?.plan_id ?? 'pro'
 }
 
+export async function fetchBillingSubscription(orgId) {
+  if (!orgId || !supabase) return null
+  const { data } = await supabase
+    .from('billing_subscriptions')
+    .select('plan_id, status, current_period_end, stripe_subscription_id')
+    .eq('org_id', orgId)
+    .maybeSingle()
+  return data
+}
+
 // ── Chantiers ─────────────────────────────────────────────────────
 
 export async function insertChantier(f, orgId) {
@@ -241,9 +252,18 @@ export async function updateFactureStatut(id, statut) {
 // ── Messages / Rapports / Avenants / Punch / Heures ───────────────
 
 export async function insertMessage(m, orgId) {
-  const row = await scopedRow({
-    chantier_id: m.chantierId, auteur: m.auteur, role: m.role || '', texte: m.texte, heure: m.heure || '', date: m.date || null,
-  }, orgId)
+  const base = {
+    chantier_id: m.chantierId,
+    auteur: m.auteur,
+    role: m.role || '',
+    texte: m.texte,
+    heure: m.heure || '',
+    date: m.date || null,
+  }
+  if (m.type && m.type !== 'text') base.type = m.type
+  if (m.attachments?.length) base.attachments = m.attachments
+  if (m.clientId) base.client_id = m.clientId
+  const row = await scopedRow(base, orgId)
   const { data, error } = await supabase.from('messages').insert(row).select().single()
   throwIfError(error)
   return mapMessage(data)

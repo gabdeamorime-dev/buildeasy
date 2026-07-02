@@ -8,12 +8,13 @@
   },
   "ios": {
     "contentInset": "automatic",
-    "backgroundColor": "#2563EB",
+    "backgroundColor": "#152238",
     "allowsLinkPreview": false,
-    "scrollEnabled": true
+    "scrollEnabled": true,
+    "preferredContentMode": "mobile"
   },
   "android": {
-    "backgroundColor": "#2563EB",
+    "backgroundColor": "#152238",
     "allowMixedContent": false,
     "captureInput": true,
     "webContentsDebuggingEnabled": false
@@ -23,7 +24,7 @@
       "launchShowDuration": 2000,
       "launchAutoHide": true,
       "launchFadeOutDuration": 300,
-      "backgroundColor": "#2563EB",
+      "backgroundColor": "#152238",
       "androidSplashResourceName": "splash",
       "androidScaleType": "CENTER_CROP",
       "showSpinner": false,
@@ -32,7 +33,7 @@
     },
     "StatusBar": {
       "style": "LIGHT",
-      "backgroundColor": "#2563EB"
+      "backgroundColor": "#152238"
     },
     "Keyboard": {
       "resize": "body",

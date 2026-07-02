@@ -1,0 +1,2 @@
+CAPACITOR_DEBUG = false
+#include? "Signing.xcconfig"

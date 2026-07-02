@@ -22,6 +22,14 @@
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>NSCameraUsageDescription</key>
+	<string>BuildEasy utilise l'appareil photo pour joindre des photos de chantier dans le chat.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>BuildEasy accède à vos photos pour les partager sur le chantier (chat, punch list).</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>BuildEasy peut enregistrer des exports dans votre photothèque.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>BuildEasy utilise le micro pour enregistrer des vidéos de chantier.</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>LSRequiresIPhoneOS</key>

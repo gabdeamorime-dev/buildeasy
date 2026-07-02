@@ -1,54 +1,26 @@
 {
   "name": "BuildEasy — Gestion de chantier BTP",
   "short_name": "BuildEasy",
-  "description": "Gestion de chantier BTP pour artisans et PME",
-  "start_url": "/",
+  "description": "Gestion de chantier BTP pour artisans et PME — disponible hors ligne",
+  "start_url": "/app",
+  "scope": "/",
   "display": "standalone",
-  "background_color": "#2563EB",
-  "theme_color": "#2563EB",
+  "orientation": "portrait-primary",
+  "background_color": "#eceef2",
+  "theme_color": "#152238",
   "lang": "fr",
   "icons": [
     {
-      "src": "../icons/icon-48.webp",
-      "type": "image/png",
-      "sizes": "48x48",
-      "purpose": "any maskable"
-    },
-    {
-      "src": "../icons/icon-72.webp",
-      "type": "image/png",
-      "sizes": "72x72",
-      "purpose": "any maskable"
-    },
-    {
-      "src": "../icons/icon-96.webp",
-      "type": "image/png",
-      "sizes": "96x96",
-      "purpose": "any maskable"
-    },
-    {
-      "src": "../icons/icon-128.webp",
-      "type": "image/png",
-      "sizes": "128x128",
-      "purpose": "any maskable"
-    },
-    {
-      "src": "../icons/icon-192.webp",
-      "type": "image/png",
-      "sizes": "192x192",
-      "purpose": "any maskable"
-    },
-    {
-      "src": "../icons/icon-256.webp",
-      "type": "image/png",
-      "sizes": "256x256",
-      "purpose": "any maskable"
-    },
-    {
-      "src": "../icons/icon-512.webp",
-      "type": "image/png",
+      "src": "/icon.png",
       "sizes": "512x512",
-      "purpose": "any maskable"
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
     }
   ]
 }

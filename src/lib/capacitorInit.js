@@ -13,7 +13,7 @@ export async function initCapacitor() {
 
   try {
     await StatusBar.setStyle({ style: Style.Light })
-    await StatusBar.setBackgroundColor({ color: '#2563EB' })
+    await StatusBar.setBackgroundColor({ color: '#152238' })
   } catch { /* web / simulator */ }
 
   try {

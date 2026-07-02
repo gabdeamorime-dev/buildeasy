@@ -15,6 +15,20 @@
 ## Prérequis (une seule fois)
 
 ### macOS / iOS
+
+Voir le guide détaillé **[IOS.md](./IOS.md)**.
+
+```bash
+# 1. Team ID dans .env puis :
+npm run configure:ios
+
+# 2. Build + sync + instructions
+npm run prepare:ios
+
+# 3. Ouvrir Xcode
+npm run open:ios
+```
+
 ```bash
 sudo xcodebuild -license accept
 ```
@@ -72,8 +86,8 @@ cp android/keystore.properties.example android/keystore.properties
 4. Fiche App Store :
    - **Description** : Gestion de chantier BTP — heures, tâches, devis, incidents, MOA
    - **Mots-clés** : BTP, chantier, construction, devis, planning
-   - **URL support** : https://buildeasy.eu/support (à créer)
-   - **URL politique de confidentialité** : obligatoire (voir section ci-dessous)
+   - **URL support** : https://buildeasy.vercel.app/support
+   - **URL politique de confidentialité** : https://buildeasy.vercel.app/privacy
    - **Captures** : iPhone 6.7" + 6.5" (minimum 3 écrans)
 5. **App Privacy** : pas de tracking ; données compte/email si Supabase activé
 6. **Export compliance** : `ITSAppUsesNonExemptEncryption = false` (déjà dans Info.plist)
@@ -97,11 +111,12 @@ cp android/keystore.properties.example android/keystore.properties
 
 ## Politique de confidentialité (obligatoire)
 
-Créez une page publique (ex. `https://buildeasy.eu/privacy`) mentionnant :
-- Données stockées localement (localStorage)
-- Sync cloud optionnelle via Supabase (email, données chantier)
-- Pas de revente de données, pas de publicité
-- Contact : support@buildeasy.eu
+Pages publiques déjà intégrées à l'app :
+
+- **Confidentialité** : https://buildeasy.vercel.app/privacy
+- **Support** : https://buildeasy.vercel.app/support
+
+Contact : support@buildeasy.eu
 
 ---
 
@@ -113,7 +128,8 @@ Créez une page publique (ex. `https://buildeasy.eu/privacy`) mentionnant :
 - [x] HTTPS only, pas de cleartext (Android network config)
 - [x] Portrait verrouillé (mobile)
 - [x] Version 1.0.0 / build 1
-- [x] Init native (`src/lib/capacitorInit.js`)
+- [x] Pages légales `/privacy` et `/support` (App Store)
+- [x] Schéma Xcode + signature via `APPLE_TEAM_ID` (voir IOS.md)
 - [x] PWA manifest web
 
 ---

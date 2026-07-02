@@ -1,9 +1,23 @@
 import { supabase, isSupabaseConfigured } from '../supabase.js'
 import { fetchOrgPlan } from './db.js'
+import { acceptInvitation, clearInviteToken, getStoredInviteToken, persistInviteToken } from './team.js'
+
+const REF_KEY = 'be_ref'
 
 function sb() {
   if (!supabase) throw new Error('Supabase non configuré')
   return supabase
+}
+
+export function persistReferralCode(code) {
+  const c = (code || '').trim().toUpperCase()
+  if (!c || typeof sessionStorage === 'undefined') return
+  sessionStorage.setItem(REF_KEY, c)
+}
+
+export function getStoredReferralCode() {
+  if (typeof sessionStorage === 'undefined') return ''
+  return sessionStorage.getItem(REF_KEY) || ''
 }
 
 function chIdsFromProfile(profile, authUser) {
@@ -20,8 +34,27 @@ function chIdsFromProfile(profile, authUser) {
   return (Array.isArray(raw) ? raw : []).map(Number).filter((n) => !Number.isNaN(n))
 }
 
+async function acceptInvitationToken(token) {
+  if (!token) return
+  const { error } = await sb().rpc('accept_org_invitation', { p_token: token })
+  if (error) throw new Error(error.message)
+}
+
+async function acceptPendingInvitationIfAny() {
+  const token = getStoredInviteToken()
+  if (!token) return
+  try {
+    await acceptInvitation(token)
+    clearInviteToken()
+  } catch (e) {
+    console.warn('[BuildEasy] accept invitation:', e?.message)
+  }
+}
+
 async function ensureSignupComplete(authUser) {
   const umeta = authUser.user_metadata ?? {}
+  if (umeta.invite_token) return
+
   if (umeta.signup !== 'true' && umeta.signup !== true) return
 
   const { data: profile } = await sb()
@@ -47,6 +80,7 @@ export async function fetchAppUser(authUserId) {
   if (!authUser || authUser.id !== authUserId) throw new Error('Session invalide')
 
   await ensureSignupComplete(authUser)
+  await acceptPendingInvitationIfAny()
 
   const { data: profile } = await sb()
     .from('profiles')
@@ -85,7 +119,39 @@ export async function signInWithEmail(email, password) {
   return fetchAppUser(data.user.id)
 }
 
-export async function signUpWithEmail({ email, password, nom, entreprise }) {
+export async function signInAndAcceptInvite(email, password, inviteToken) {
+  const appUser = await signInWithEmail(email, password)
+  await acceptInvitationToken(inviteToken)
+  return fetchAppUser(appUser.id)
+}
+
+export async function signUpWithEmail({ email, password, nom, entreprise, referralCode }) {
+  const emailNorm = email.trim().toLowerCase()
+  const ref = (referralCode || getStoredReferralCode() || '').trim().toUpperCase()
+  const meta = {
+    nom: (nom || '').trim(),
+    entreprise: (entreprise || '').trim(),
+    signup: 'true',
+  }
+  if (ref) meta.ref = ref
+
+  const { data, error } = await sb().auth.signUp({
+    email: emailNorm,
+    password,
+    options: { data: meta },
+  })
+  if (error) throw error
+  if (!data.user) throw new Error('Inscription impossible')
+
+  if (data.session) {
+    await ensureSignupComplete(data.user)
+    return { user: await fetchAppUser(data.user.id), needsEmailConfirmation: false }
+  }
+
+  return { user: null, needsEmailConfirmation: true, email: emailNorm }
+}
+
+export async function signUpWithInvite({ email, password, nom, inviteToken }) {
   const emailNorm = email.trim().toLowerCase()
   const { data, error } = await sb().auth.signUp({
     email: emailNorm,
@@ -93,16 +159,19 @@ export async function signUpWithEmail({ email, password, nom, entreprise }) {
     options: {
       data: {
         nom: (nom || '').trim(),
-        entreprise: (entreprise || '').trim(),
-        signup: 'true',
+        invite_token: inviteToken,
       },
     },
   })
   if (error) throw error
   if (!data.user) throw new Error('Inscription impossible')
 
+  if (!data.session && inviteToken) {
+    persistInviteToken(inviteToken)
+  }
+
   if (data.session) {
-    await ensureSignupComplete(data.user)
+    await acceptInvitationToken(inviteToken)
     return { user: await fetchAppUser(data.user.id), needsEmailConfirmation: false }
   }
 
@@ -122,9 +191,9 @@ export async function signOut() {
 }
 
 export async function getSessionUser() {
-  const { data: { session } } = await sb().auth.getSession()
-  if (!session?.user) return null
-  return fetchAppUser(session.user.id)
+  const { data: { user }, error } = await sb().auth.getUser()
+  if (error || !user) return null
+  return fetchAppUser(user.id)
 }
 
 export function onAuthChange(callback) {

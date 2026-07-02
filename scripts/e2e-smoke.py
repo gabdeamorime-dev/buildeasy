@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
-"""BuildEasy — smoke E2E (serveur dev déjà lancé sur :5195)."""
+"""BuildEasy — smoke E2E (serveur preview sur :5195)."""
+import os
 from playwright.sync_api import sync_playwright, expect
 
-BASE = "http://localhost:5195"
+BASE = os.environ.get("BASE_URL", "http://127.0.0.1:5195")
 ERRORS = []
 
 
 def login(page, email, password):
-    page.goto(BASE)
+    page.goto(f"{BASE}/app")
     page.wait_for_load_state("networkidle")
-    page.get_by_placeholder("Email").fill(email)
+    page.wait_for_timeout(1500)  # dismiss boot overlay
+    email_inp = page.get_by_placeholder("Email professionnel").or_(page.get_by_placeholder("Email"))
+    email_inp.first.fill(email)
     page.get_by_placeholder("Mot de passe").fill(password)
     page.get_by_role("button", name="Se connecter").click()
-    page.wait_for_timeout(800)
+    page.wait_for_timeout(1200)
 
 
 def logout(page):
