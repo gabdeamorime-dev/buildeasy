@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import "./design-system.css";
 import { isSupabaseConfigured, supabase } from "./supabase.js";
-import { signInWithEmail, signInAndAcceptInvite, signUpWithEmail, signUpWithInvite, resetPassword, signOut as authSignOut, onAuthChange, getSessionUser } from "./lib/auth.js";
+import { signInWithEmail, signInAndAcceptInvite, signUpWithEmail, signUpWithInvite, resetPassword, signOut as authSignOut, onAuthChange, getSessionUser, formatAuthError } from "./lib/auth.js";
 import { previewInvitation, getOrgUsageStats } from "./lib/team.js";
 import TeamPanel from "./ui/TeamPanel.jsx";
 import { loadAppDataForUi } from "./lib/appDataBridge.js";
@@ -17,6 +17,7 @@ import { messageFromDbRow } from "./lib/appDataBridge.js";
 import ChatMessageBody from "./ui/ChatMessageBody.jsx";
 import { DEMO_COMPTES, isDemoModeEnabled } from "./lib/demoComptes.js";
 import { safeHref, safeExternalHref } from "./lib/safeUrl.js";
+import { bindAuthFormScroll } from "./lib/authFormScroll.js";
 import { METEO_PRESETS, AGENDA_TYPES, INCIDENT_TYPES, ModIcon, IcoHome, IcoBuild, IcoTask, IcoChat, IcoMore, IcoPhone, IcoAlert, IcoPlus } from "./ui/icons.jsx";
 import { EmptyState, QuickAction, CallTile, MetaRow } from "./ui/primitives.jsx";
 
@@ -1254,6 +1255,11 @@ function LoginScreen({ onLogin, initialMode = "login", onBackToLanding, inviteTo
   const [showMdp,setShowMdp]=useState(false);
   const [invitePreview,setInvitePreview]=useState(null);
   const [inviteLoad,setInviteLoad]=useState(!!inviteToken);
+  const authPanelRef = useRef(null);
+
+  useEffect(() => {
+    return bindAuthFormScroll(authPanelRef.current)
+  }, []);
 
   useEffect(() => {
     if (inviteMode) return;
@@ -1293,7 +1299,7 @@ function LoginScreen({ onLogin, initialMode = "login", onBackToLanding, inviteTo
           const local = DEMO_COMPTES.find(c => c.email === emailNorm && c.mdp === mdp);
           if (local) { onLogin({ ...local, isLocal: true, chIds: local.chIds || [] }); setLoad(false); return; }
         }
-        setErr(e?.message?.includes("invitation") ? e.message : "Email ou mot de passe incorrect");
+        setErr(formatAuthError(e, e?.message?.includes("invitation") ? e.message : "Email ou mot de passe incorrect"));
       } finally {
         setLoad(false);
       }
@@ -1328,7 +1334,7 @@ function LoginScreen({ onLogin, initialMode = "login", onBackToLanding, inviteTo
         onLogin(user);
       }
     } catch (e) {
-      setErr(e?.message?.includes("already") ? "Cet email est déjà utilisé" : (e?.message || "Inscription impossible"));
+      setErr(formatAuthError(e, e?.message?.includes("already") ? "Cet email est déjà utilisé" : "Inscription impossible"));
     } finally {
       setLoad(false);
     }
@@ -1400,7 +1406,7 @@ function LoginScreen({ onLogin, initialMode = "login", onBackToLanding, inviteTo
         </div>
       </aside>
 
-      <div className="auth-panel">
+      <div className="auth-panel" ref={authPanelRef}>
         <div className="auth-panel-inner">
           {onBackToLanding&&(
             <button type="button" className="auth-back" onClick={onBackToLanding}>← Retour au site</button>

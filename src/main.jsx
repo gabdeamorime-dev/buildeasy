@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom/client'
 import Root from './Root.jsx'
 import { initCapacitor } from './lib/capacitorInit.js'
 import { registerPWA, skipWaitingAndReload } from './lib/pwaRegister.js'
+import { initMobileKeyboardInset } from './lib/authFormScroll.js'
 
 async function prepareDevEnvironment() {
   if (!import.meta.env.DEV || !('serviceWorker' in navigator)) return
@@ -37,6 +38,7 @@ window.__BE_SKIP_WAITING__ = skipWaitingAndReload
 initCapacitor()
   .then(prepareDevEnvironment)
   .finally(() => {
+  initMobileKeyboardInset()
   ReactDOM.createRoot(document.getElementById('root')).render(
     <React.StrictMode>
       <Root />

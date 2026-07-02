@@ -9,6 +9,28 @@ function sb() {
   return supabase
 }
 
+/** Message lisible pour erreurs Auth / inscription. */
+export function formatAuthError(err, fallback = 'Opération impossible') {
+  const msg = String(err?.message || err || '').toLowerCase()
+  if (!msg) return fallback
+  if (msg.includes('database error saving new user')) {
+    return 'Erreur base de données à l\'inscription. L\'administrateur doit appliquer la migration Supabase 20260623_fix_signup_trigger.sql (Dashboard → SQL).'
+  }
+  if (msg.includes('already registered') || msg.includes('already been registered')) {
+    return 'Cet email est déjà utilisé'
+  }
+  if (msg.includes('invalid login') || msg.includes('invalid credentials')) {
+    return 'Email ou mot de passe incorrect'
+  }
+  if (msg.includes('password') && msg.includes('least')) {
+    return 'Mot de passe trop court (8 caractères minimum)'
+  }
+  if (msg.includes('rate limit') || msg.includes('too many')) {
+    return 'Trop de tentatives — réessayez dans quelques minutes'
+  }
+  return err?.message || fallback
+}
+
 export function persistReferralCode(code) {
   const c = (code || '').trim().toUpperCase()
   if (!c || typeof sessionStorage === 'undefined') return

@@ -36,7 +36,7 @@
       "backgroundColor": "#152238"
     },
     "Keyboard": {
-      "resize": "body",
+      "resize": "native",
       "resizeOnFullScreen": true
     }
   }

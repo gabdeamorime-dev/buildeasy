@@ -1,12 +1,30 @@
 import { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useState } from 'react'
 import LandingPage from './LandingPage.jsx'
 import LegalPage from './LegalPage.jsx'
+import { isNative } from './lib/capacitorInit.js'
+import { isRunningStandalone } from './lib/pwaRegister.js'
 
 const App = lazy(() => import('./App.jsx'))
 import { persistReferralCode } from './lib/auth.js'
 import { persistInviteToken } from './lib/team.js'
 
 const REF_KEY = 'be_ref'
+
+/** App installée (Capacitor / PWA) : pas de page marketing, login direct. */
+function isInstalledApp() {
+  return isNative || isRunningStandalone()
+}
+
+function normalizePath(pathname) {
+  if (pathname === '/index.html') return '/'
+  return pathname
+}
+
+function readInitialPath() {
+  const pathname = normalizePath(window.location.pathname)
+  if (isInstalledApp() && pathname === '/') return '/app'
+  return pathname
+}
 
 function readAppAuthMode() {
   const params = new URLSearchParams(window.location.search)
@@ -37,10 +55,20 @@ function captureReferralFromUrl() {
 }
 
 export default function Root() {
-  const [path, setPath] = useState(() => window.location.pathname)
+  const [path, setPath] = useState(readInitialPath)
   const [search, setSearch] = useState(() => window.location.search)
   const [authMode, setAuthMode] = useState(readAppAuthMode)
-  const [inviteToken, setInviteToken] = useState(() => readInviteToken(window.location.pathname, window.location.search))
+  const [inviteToken, setInviteToken] = useState(() => readInviteToken(readInitialPath(), window.location.search))
+
+  useEffect(() => {
+    if (!isInstalledApp()) return
+    const urlPath = normalizePath(window.location.pathname)
+    if (urlPath === '/' && !readLegalKind(urlPath)) {
+      window.history.replaceState({}, '', `/app${window.location.search}`)
+      setPath('/app')
+      setAuthMode('login')
+    }
+  }, [])
 
   useLayoutEffect(() => {
     const inApp = isAppPath(path)
@@ -83,6 +111,15 @@ export default function Root() {
   }, [])
 
   const goLanding = useCallback(() => {
+    if (isInstalledApp()) {
+      window.history.replaceState({}, '', '/app')
+      setPath('/app')
+      setSearch('')
+      setInviteToken('')
+      setAuthMode('login')
+      window.scrollTo(0, 0)
+      return
+    }
     window.history.pushState({}, '', '/')
     setPath('/')
     setSearch('')
@@ -102,7 +139,7 @@ export default function Root() {
         <App
           initialAuthMode={authMode}
           inviteToken={inviteToken}
-          onBackToLanding={goLanding}
+          onBackToLanding={isInstalledApp() ? undefined : goLanding}
         />
       </Suspense>
     )

@@ -6,6 +6,11 @@ import { Keyboard } from '@capacitor/keyboard'
 
 export const isNative = Capacitor.isNativePlatform()
 
+function setKeyboardInset(px) {
+  const v = `${Math.max(0, Math.round(px))}px`
+  document.documentElement.style.setProperty('--kb-height', v)
+}
+
 export async function initCapacitor() {
   if (!isNative) return
 
@@ -21,11 +26,21 @@ export async function initCapacitor() {
   } catch { /* */ }
 
   try {
-    Keyboard.setAccessoryBarVisible({ isVisible: true })
-    Keyboard.addListener('keyboardWillShow', () => {
+    await Keyboard.setAccessoryBarVisible({ isVisible: true })
+    Keyboard.addListener('keyboardWillShow', (info) => {
+      setKeyboardInset(info?.keyboardHeight ?? 280)
+      document.documentElement.classList.add('kb-open')
+    })
+    Keyboard.addListener('keyboardDidShow', (info) => {
+      setKeyboardInset(info?.keyboardHeight ?? 280)
       document.documentElement.classList.add('kb-open')
     })
     Keyboard.addListener('keyboardWillHide', () => {
+      setKeyboardInset(0)
+      document.documentElement.classList.remove('kb-open')
+    })
+    Keyboard.addListener('keyboardDidHide', () => {
+      setKeyboardInset(0)
       document.documentElement.classList.remove('kb-open')
     })
   } catch { /* */ }

@@ -21,6 +21,7 @@
     "vercel:deploy": "node scripts/vercel-deploy.mjs",
     "security:audit": "node scripts/security-audit.mjs",
     "test:e2e": "node scripts/e2e-smoke.mjs",
+    "db:fix-signup": "node scripts/apply-signup-fix.mjs",
     "deploy": "node scripts/vercel-deploy.mjs",
     "fix:vercel-domain": "node scripts/fix-vercel-domain.mjs",
     "diagnose:vercel": "node scripts/diagnose-vercel.mjs",

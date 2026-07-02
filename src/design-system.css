@@ -780,14 +780,18 @@ select.inp option { background: var(--w); color: var(--t1); }
 .auth-page {
   position: fixed;
   inset: 0;
-  overflow-y: auto;
-  display: grid;
-  grid-template-columns: 1fr;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   background: var(--bg);
 }
 
 @media (min-width: 900px) {
-  .auth-page { grid-template-columns: 1fr 1fr; }
+  .auth-page {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    overflow-y: auto;
+  }
 }
 
 .auth-brand {
@@ -849,9 +853,15 @@ select.inp option { background: var(--w); color: var(--t1); }
 .auth-panel {
   display: flex;
   flex-direction: column;
-  justify-content: center;
+  justify-content: flex-start;
+  flex: 1;
+  min-height: 0;
   padding: 24px;
+  padding-bottom: calc(24px + var(--sb, 0px));
   overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
 }
 
 .auth-panel-inner {
@@ -991,11 +1001,19 @@ body {
 }
 
 .kb-open .fab {
-  bottom: calc(120px + var(--sb));
+  bottom: calc(120px + var(--sb) + var(--kb-height, 0px));
 }
 
 .kb-open .toast-banner {
-  bottom: calc(130px + var(--sb));
+  bottom: calc(130px + var(--sb) + var(--kb-height, 0px));
+}
+
+.kb-open .auth-brand {
+  display: none;
+}
+
+.kb-open .auth-panel {
+  padding-bottom: calc(16px + var(--kb-height, 0px) + var(--sb, 0px));
 }
 
 @media (max-width: 640px) {
@@ -1005,10 +1023,19 @@ body {
   .app-title { font-size: 14px; }
   .app-role-badge { display: none; }
   .sh { padding-left: 14px; padding-right: 14px; }
-  .auth-brand { padding: 28px 20px; min-height: auto; }
-  .auth-brand h1 { font-size: 1.5rem; }
+  .auth-brand {
+    flex-shrink: 0;
+    padding: 20px 16px 12px;
+    min-height: auto;
+    max-height: 32vh;
+    overflow: hidden;
+  }
+  .auth-brand h1 { font-size: 1.35rem; margin-top: 12px; }
   .auth-features { display: none; }
-  .auth-panel { padding: 16px; justify-content: flex-start; padding-top: 20px; }
+  .auth-panel {
+    padding: 12px 16px 20px;
+    justify-content: flex-start;
+  }
   .auth-card { padding: 16px; }
   .btn { min-height: 48px; }
   .inp { height: 48px; font-size: 16px; }
