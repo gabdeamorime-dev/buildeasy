@@ -19,9 +19,19 @@ import { DEMO_COMPTES, isDemoModeEnabled } from "./lib/demoComptes.js";
 import { safeHref, safeExternalHref } from "./lib/safeUrl.js";
 import { bindAuthFormScroll } from "./lib/authFormScroll.js";
 import { METEO_PRESETS, AGENDA_TYPES, INCIDENT_TYPES, ModIcon, IcoHome, IcoBuild, IcoTask, IcoChat, IcoMore, IcoPhone, IcoAlert, IcoPlus } from "./ui/icons.jsx";
+import { LogoMark } from "./ui/Logo.jsx";
 import { EmptyState, QuickAction, CallTile, MetaRow } from "./ui/primitives.jsx";
 
 const DEMO_AUTH = isDemoModeEnabled();
+
+/** Depuis la landing (Essai / Connexion) : ne pas réutiliser une session Supabase d'un autre compte. */
+function shouldForceAuthScreen(initialMode, inviteToken) {
+  if (inviteToken) return false
+  if (initialMode === 'signup') return true
+  if (typeof sessionStorage !== 'undefined' && sessionStorage.getItem('be_force_auth') === '1') return true
+  const m = new URLSearchParams(window.location.search).get('mode')
+  return m === 'signup' || m === 'login'
+}
 const APP_VERSION = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '1.0.0';
 const APP_BUILD_ID = typeof __APP_BUILD_ID__ !== 'undefined' ? __APP_BUILD_ID__ : '';
 
@@ -1393,9 +1403,7 @@ function LoginScreen({ onLogin, initialMode = "login", onBackToLanding, inviteTo
       <aside className="auth-brand">
         <div className="auth-brand-inner">
           <div style={{display:"flex",alignItems:"center",gap:10}}>
-            <div className="app-logo">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5" strokeLinecap="round"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
-            </div>
+            <LogoMark size={32} className="app-logo-mark" />
             <span style={{fontSize:20,fontWeight:800,letterSpacing:"-.03em"}}>BuildEasy</span>
           </div>
           <h1>Le pilotage chantier, pensé pour le terrain.</h1>
@@ -4508,9 +4516,7 @@ function AppMobile({ user, onLogout, themeId, setThemeId }) {
 
   if(!sbReady) return (
     <div className="app-loading">
-      <div className="app-logo" style={{width:48,height:48,borderRadius:14}}>
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5" strokeLinecap="round"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
-      </div>
+      <LogoMark size={48} className="app-logo-mark" />
       <div className="app-loading-text">Chargement des données…</div>
     </div>
   );
@@ -4527,9 +4533,7 @@ function AppMobile({ user, onLogout, themeId, setThemeId }) {
       <header className="app-header">
         <div className="app-header-inner">
           <div style={{display:"flex",alignItems:"center",gap:10}}>
-            <div className="app-logo">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5" strokeLinecap="round"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
-            </div>
+            <LogoMark size={32} className="app-logo-mark" />
             <span className="app-title">BuildEasy</span>
             <span title={online?(pendingSync>0?`${pendingSync} en attente de sync`:savedAt?"En ligne · sauvegardé":"En ligne"):"Hors ligne — mode local"} style={{width:8,height:8,borderRadius:"50%",background:online?(pendingSync>0?"var(--warn)":"var(--ok)"):"var(--warn)",marginLeft:4,flexShrink:0,display:"inline-block"}}/>
           </div>
@@ -4711,17 +4715,36 @@ export default function App({ initialAuthMode = "login", inviteToken = "", onBac
 
   useEffect(() => {
     if (!isSupabaseConfigured) return;
-    getSessionUser().then((u) => { if (u) setUser(u); });
-    return onAuthChange((u) => {
-      setUser((prev) => {
-        if (u) return u;
-        if (prev?.isSupabase) return null;
-        return prev;
+    let unsub = () => {};
+    let cancelled = false;
+
+    (async () => {
+      const forceAuth = shouldForceAuthScreen(initialAuthMode, inviteToken);
+      if (forceAuth) {
+        sessionStorage.removeItem('be_force_auth');
+        await authSignOut().catch(() => {});
+        if (!cancelled) setUser(null);
+      } else {
+        const u = await getSessionUser();
+        if (!cancelled && u) setUser(u);
+      }
+      unsub = onAuthChange((u) => {
+        setUser((prev) => {
+          if (u) return u;
+          if (prev?.isSupabase) return null;
+          return prev;
+        });
       });
-    });
-  }, []);
+    })();
+
+    return () => {
+      cancelled = true;
+      unsub();
+    };
+  }, [initialAuthMode, inviteToken]);
 
   const handleLogout=async()=>{
+    sessionStorage.removeItem('be_force_auth');
     if (user?.isSupabase) await authSignOut().catch(() => {});
     setUser(null);
     onBackToLanding?.();

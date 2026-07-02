@@ -97,9 +97,11 @@ export default function Root() {
   }, [])
 
   const enterApp = useCallback((mode = 'login') => {
+    sessionStorage.setItem('be_force_auth', '1')
     const ref = sessionStorage.getItem(REF_KEY)
     const params = new URLSearchParams()
     if (mode === 'signup') params.set('mode', 'signup')
+    else params.set('mode', 'login')
     if (ref) params.set('ref', ref)
     const q = params.toString()
     window.history.pushState({}, '', `/app${q ? `?${q}` : ''}`)
@@ -137,6 +139,7 @@ export default function Root() {
         )}
       >
         <App
+          key={`${authMode}-${inviteToken || 'main'}`}
           initialAuthMode={authMode}
           inviteToken={inviteToken}
           onBackToLanding={isInstalledApp() ? undefined : goLanding}
