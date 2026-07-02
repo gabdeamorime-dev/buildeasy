@@ -171,6 +171,7 @@ Délai d'examen Apple : en général 24–48 h.
 | Archive grisé | Sélectionnez **Any iOS Device**, pas un simulateur |
 | App blanche au lancement | `npm run cap:sync` puis rebuild dans Xcode |
 | Licence Xcode | `sudo xcodebuild -license accept` |
+| **Could not resolve package dependencies** / `@capacitor/* doesn't exist` | Lancer `npm ci` puis `npm run cap:sync` **avant** Xcode. Sur **Xcode Cloud**, le dossier `ci_scripts/ci_post_clone.sh` du repo installe npm automatiquement. |
 
 ---
 

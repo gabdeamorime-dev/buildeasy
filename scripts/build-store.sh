@@ -5,6 +5,10 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 echo "▶ Sync web → native…"
+if [ ! -f node_modules/@capacitor/app/Package.swift ]; then
+  echo "▶ npm ci (Capacitor SPM → node_modules)…"
+  npm ci
+fi
 npm run cap:sync
 
 export JAVA_HOME="${JAVA_HOME:-/Applications/Android Studio.app/Contents/jbr/Contents/Home}"

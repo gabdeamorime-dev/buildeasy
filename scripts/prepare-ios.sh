@@ -21,6 +21,11 @@ if ! xcodebuild -checkFirstLaunchStatus 2>/dev/null; then
   echo "⚠ Acceptez la licence : sudo xcodebuild -license accept"
 fi
 
+if [ ! -f node_modules/@capacitor/app/Package.swift ]; then
+  echo "▶ Installation npm (requise pour les packages Capacitor SPM)…"
+  npm ci
+fi
+
 echo "▶ Assets store (icône + splash)…"
 if [ ! -f assets/icon.png ]; then
   npm run assets:generate
