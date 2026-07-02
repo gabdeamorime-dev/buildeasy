@@ -14,7 +14,7 @@ export function formatAuthError(err, fallback = 'Opération impossible') {
   const msg = String(err?.message || err || '').toLowerCase()
   if (!msg) return fallback
   if (msg.includes('database error saving new user')) {
-    return 'Erreur base de données à l\'inscription. L\'administrateur doit appliquer la migration Supabase 20260623_fix_signup_trigger.sql (Dashboard → SQL).'
+    return 'Erreur base de données à l\'inscription. Appliquez la migration Supabase 20260623_fix_signup_trigger.sql (Dashboard → SQL). Lien direct : https://supabase.com/dashboard/project/nvgemgfeaxqocrmzdmzy/sql/new — ou lancez : npm run db:fix-signup'
   }
   if (msg.includes('already registered') || msg.includes('already been registered')) {
     return 'Cet email est déjà utilisé'
