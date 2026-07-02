@@ -1,26 +1,6 @@
 #!/bin/sh
-# Xcode Cloud — obligatoire avant la résolution SPM Capacitor (packages dans node_modules).
+# DEPRECATED — Xcode Cloud lit ci_scripts à côté de App.xcodeproj, pas à la racine.
+# Scripts actifs : ios/App/ci_scripts/
 set -e
-
-echo "▶ BuildEasy ci_post_clone"
-
 cd "${CI_PRIMARY_REPOSITORY_PATH:-.}"
-
-if ! command -v npm >/dev/null 2>&1; then
-  echo "npm absent — installation via Homebrew…"
-  brew install node@22
-  export PATH="/opt/homebrew/opt/node@22/bin:/usr/local/opt/node@22/bin:$PATH"
-fi
-
-echo "Node $(node --version) · npm $(npm --version)"
-
-npm ci
-npm run build
-npx cap sync ios
-
-if [ ! -f node_modules/@capacitor/app/Package.swift ]; then
-  echo "❌ @capacitor/app introuvable après npm ci"
-  exit 1
-fi
-
-echo "✅ node_modules + Capacitor iOS prêts pour xcodebuild"
+exec sh ios/App/ci_scripts/ci_post_clone.sh
