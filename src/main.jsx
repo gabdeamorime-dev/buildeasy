@@ -1,12 +1,14 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import Root from './Root.jsx'
-import { initCapacitor } from './lib/capacitorInit.js'
+import { initCapacitor, isNative } from './lib/capacitorInit.js'
 import { registerPWA, skipWaitingAndReload } from './lib/pwaRegister.js'
 import { initMobileKeyboardInset } from './lib/authFormScroll.js'
 
-async function prepareDevEnvironment() {
-  if (!import.meta.env.DEV || !('serviceWorker' in navigator)) return
+/** Supprime SW + caches obsolètes (dev + app native Capacitor). */
+async function prepareRuntimeEnvironment() {
+  const shouldPurge = import.meta.env.DEV || isNative
+  if (!shouldPurge || !('serviceWorker' in navigator)) return
   const regs = await navigator.serviceWorker.getRegistrations()
   await Promise.all(regs.map((r) => r.unregister()))
   if ('caches' in window) {
@@ -36,7 +38,7 @@ window.__BE_ACTIVATE_PWA__ = activatePwaUpdate
 window.__BE_SKIP_WAITING__ = skipWaitingAndReload
 
 initCapacitor()
-  .then(prepareDevEnvironment)
+  .then(prepareRuntimeEnvironment)
   .finally(() => {
   initMobileKeyboardInset()
   ReactDOM.createRoot(document.getElementById('root')).render(

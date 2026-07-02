@@ -1,7 +1,8 @@
 /**
- * Enregistrement du service worker — permet le chargement de l'app sans réseau
- * après une première visite en ligne (ou installation PWA).
+ * Enregistrement du service worker — PWA web uniquement (pas Capacitor natif).
  */
+import { isNative } from './capacitorInit.js'
+
 const SW_URL = '/sw.js'
 
 export function isPwaSupported() {
@@ -16,8 +17,8 @@ export function isRunningStandalone() {
 
 export function registerPWA({ onOfflineReady, onNeedRefresh } = {}) {
   if (!isPwaSupported()) return () => {}
-  // En dev, le SW sert un cache stale et masque les changements (routing, login, etc.)
-  if (import.meta.env.DEV) return () => {}
+  // Natif : assets embarqués dans l'APK/IPA — le SW sert une vieille UI en cache
+  if (import.meta.env.DEV || isNative) return () => {}
 
   let refreshing = false
 

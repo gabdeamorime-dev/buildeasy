@@ -61,6 +61,19 @@
           setTimeout(function () { el.remove(); }, 220);
         }
         window.__BE_DISMISS_BOOT__ = dismissBoot;
+        // Capacitor / WebView : purger tout SW résiduel avant le bundle embarqué
+        if (window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform()) {
+          if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.getRegistrations().then(function (regs) {
+              regs.forEach(function (r) { r.unregister(); });
+            });
+          }
+          if ('caches' in window) {
+            caches.keys().then(function (keys) {
+              keys.filter(function (k) { return k.indexOf('buildeasy-') === 0; }).forEach(function (k) { caches.delete(k); });
+            });
+          }
+        }
         if (!navigator.onLine && !navigator.serviceWorker?.controller && !sessionStorage.getItem('be_pwa_ready')) {
           document.getElementById('be-offline-first').style.display = 'flex';
           document.getElementById('be-boot').style.display = 'none';

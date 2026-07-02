@@ -22,6 +22,8 @@ import { METEO_PRESETS, AGENDA_TYPES, INCIDENT_TYPES, ModIcon, IcoHome, IcoBuild
 import { EmptyState, QuickAction, CallTile, MetaRow } from "./ui/primitives.jsx";
 
 const DEMO_AUTH = isDemoModeEnabled();
+const APP_VERSION = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '1.0.0';
+const APP_BUILD_ID = typeof __APP_BUILD_ID__ !== 'undefined' ? __APP_BUILD_ID__ : '';
 
 /** Emails démo affichés sur l'écran de connexion (cloud ou local). */
 const DEMO_ACCOUNT_EMAILS = new Set([
@@ -1528,7 +1530,7 @@ function LoginScreen({ onLogin, initialMode = "login", onBackToLanding, inviteTo
           )}
 
           <div style={{textAlign:"center",fontSize:11,color:"var(--t4)",paddingBottom:24}}>
-            BuildEasy © 2026 · contact@buildeasy.eu
+            BuildEasy © 2026 · v{APP_VERSION}{APP_BUILD_ID ? ` · ${APP_BUILD_ID}` : ''}
           </div>
         </div>
       </div>
