@@ -5,7 +5,7 @@ import { isNative } from './lib/capacitorInit.js'
 import { isRunningStandalone } from './lib/pwaRegister.js'
 
 const App = lazy(() => import('./App.jsx'))
-import { persistReferralCode } from './lib/auth.js'
+import { persistReferralCode, purgeSupabaseAuthStorage } from './lib/auth.js'
 import { persistInviteToken } from './lib/team.js'
 
 const REF_KEY = 'be_ref'
@@ -100,6 +100,7 @@ export default function Root() {
     sessionStorage.setItem('be_force_auth', '1')
     sessionStorage.removeItem('be_logged_in')
     sessionStorage.removeItem('be_auth_pending')
+    purgeSupabaseAuthStorage()
     const ref = sessionStorage.getItem(REF_KEY)
     const params = new URLSearchParams()
     if (mode === 'signup') params.set('mode', 'signup')
