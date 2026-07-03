@@ -21,8 +21,30 @@ import { bindAuthFormScroll } from "./lib/authFormScroll.js";
 import { METEO_PRESETS, AGENDA_TYPES, INCIDENT_TYPES, ModIcon, IcoHome, IcoBuild, IcoTask, IcoChat, IcoMore, IcoPhone, IcoAlert, IcoPlus } from "./ui/icons.jsx";
 import { LogoMark } from "./ui/Logo.jsx";
 import { EmptyState, QuickAction, CallTile, MetaRow } from "./ui/primitives.jsx";
+import { isNative } from "./lib/capacitorInit.js";
+import { isRunningStandalone } from "./lib/pwaRegister.js";
 
 const DEMO_AUTH = isDemoModeEnabled();
+const LOGGED_IN_KEY = 'be_logged_in';
+
+function isInstalledApp() {
+  return isNative || isRunningStandalone();
+}
+
+/** Sur le web : ne pas réutiliser une session Supabase sans connexion explicite dans cet onglet. */
+function canAutoRestoreSession() {
+  if (isInstalledApp()) return true;
+  if (typeof sessionStorage === 'undefined') return false;
+  return sessionStorage.getItem(LOGGED_IN_KEY) === '1';
+}
+
+function markSessionLoggedIn() {
+  if (typeof sessionStorage !== 'undefined') sessionStorage.setItem(LOGGED_IN_KEY, '1');
+}
+
+function clearSessionLoggedIn() {
+  if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem(LOGGED_IN_KEY);
+}
 
 /** Depuis la landing (Essai / Connexion) : ne pas réutiliser une session Supabase d'un autre compte. */
 function shouldForceAuthScreen(initialMode, inviteToken) {
@@ -4720,8 +4742,9 @@ export default function App({ initialAuthMode = "login", inviteToken = "", onBac
 
     (async () => {
       const forceAuth = shouldForceAuthScreen(initialAuthMode, inviteToken);
-      if (forceAuth) {
+      if (forceAuth || !canAutoRestoreSession()) {
         sessionStorage.removeItem('be_force_auth');
+        clearSessionLoggedIn();
         await authSignOut().catch(() => {});
         if (!cancelled) setUser(null);
       } else {
@@ -4729,6 +4752,7 @@ export default function App({ initialAuthMode = "login", inviteToken = "", onBac
         if (!cancelled && u) setUser(u);
       }
       unsub = onAuthChange((u) => {
+        if (u) markSessionLoggedIn();
         setUser((prev) => {
           if (u) return u;
           if (prev?.isSupabase) return null;
@@ -4745,14 +4769,20 @@ export default function App({ initialAuthMode = "login", inviteToken = "", onBac
 
   const handleLogout=async()=>{
     sessionStorage.removeItem('be_force_auth');
+    clearSessionLoggedIn();
     if (user?.isSupabase) await authSignOut().catch(() => {});
     setUser(null);
     onBackToLanding?.();
   };
 
+  const handleLogin=(u)=>{
+    markSessionLoggedIn();
+    setUser(u);
+  };
+
   return (
     <>
-      {!user?<LoginScreen onLogin={setUser} initialMode={initialAuthMode} inviteToken={inviteToken} onBackToLanding={onBackToLanding}/>:<AppMobile key={user.id} user={user} onLogout={handleLogout} themeId={themeId} setThemeId={setThemeId}/>}
+      {!user?<LoginScreen onLogin={handleLogin} initialMode={initialAuthMode} inviteToken={inviteToken} onBackToLanding={onBackToLanding}/>:<AppMobile key={user.id} user={user} onLogout={handleLogout} themeId={themeId} setThemeId={setThemeId}/>}
     </>
   );
 }
