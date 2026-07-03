@@ -209,7 +209,19 @@ export async function resetPassword(email) {
 
 export async function signOut() {
   const { error } = await sb().auth.signOut()
+  purgeSupabaseAuthStorage()
   if (error) throw error
+}
+
+/** Supprime la session Supabase du localStorage (évite reconnexion fantôme sur le web). */
+export function purgeSupabaseAuthStorage() {
+  if (typeof localStorage === 'undefined') return
+  const keys = []
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i)
+    if (k && k.startsWith('sb-') && k.includes('auth-token')) keys.push(k)
+  }
+  keys.forEach((k) => localStorage.removeItem(k))
 }
 
 export async function getSessionUser() {

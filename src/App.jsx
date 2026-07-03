@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import "./design-system.css";
 import { isSupabaseConfigured, supabase } from "./supabase.js";
-import { signInWithEmail, signInAndAcceptInvite, signUpWithEmail, signUpWithInvite, resetPassword, signOut as authSignOut, onAuthChange, getSessionUser, formatAuthError } from "./lib/auth.js";
+import { signInWithEmail, signInAndAcceptInvite, signUpWithEmail, signUpWithInvite, resetPassword, signOut as authSignOut, onAuthChange, getSessionUser, formatAuthError, purgeSupabaseAuthStorage } from "./lib/auth.js";
 import { previewInvitation, getOrgUsageStats } from "./lib/team.js";
 import TeamPanel from "./ui/TeamPanel.jsx";
 import { loadAppDataForUi } from "./lib/appDataBridge.js";
@@ -4760,34 +4760,42 @@ export default function App({ initialAuthMode = "login", inviteToken = "", onBac
     if (!isSupabaseConfigured) return;
     let unsub = () => {};
     let cancelled = false;
+    const forceAuth = shouldForceAuthScreen(initialAuthMode, inviteToken);
+    const mustClearSession = forceAuth || !canAutoRestoreSession();
+
+    unsub = onAuthChange((u) => {
+      if (cancelled) return;
+      if (u && !shouldAcceptAuthUser()) {
+        authSignOut().catch(() => {});
+        setUser(null);
+        return;
+      }
+      if (u) {
+        clearAuthPending();
+        markSessionLoggedIn();
+      }
+      setUser((prev) => {
+        if (u) return u;
+        if (prev?.isSupabase) return null;
+        return prev;
+      });
+    });
 
     (async () => {
-      const forceAuth = shouldForceAuthScreen(initialAuthMode, inviteToken);
-      if (forceAuth || !canAutoRestoreSession()) {
+      if (mustClearSession) {
         sessionStorage.removeItem('be_force_auth');
         clearAuthPending();
         clearSessionLoggedIn();
         await authSignOut().catch(() => {});
+        purgeSupabaseAuthStorage();
         if (!cancelled) setUser(null);
       } else {
         const u = await getSessionUser();
-        if (!cancelled && u) setUser(u);
-      }
-      unsub = onAuthChange((u) => {
-        if (u && !shouldAcceptAuthUser()) {
-          authSignOut().catch(() => {});
-          return;
-        }
-        if (u) {
-          clearAuthPending();
+        if (!cancelled && u) {
           markSessionLoggedIn();
+          setUser(u);
         }
-        setUser((prev) => {
-          if (u) return u;
-          if (prev?.isSupabase) return null;
-          return prev;
-        });
-      });
+      }
     })();
 
     return () => {
@@ -4801,6 +4809,7 @@ export default function App({ initialAuthMode = "login", inviteToken = "", onBac
     clearAuthPending();
     clearSessionLoggedIn();
     if (user?.isSupabase) await authSignOut().catch(() => {});
+    else purgeSupabaseAuthStorage();
     setUser(null);
     onBackToLanding?.();
   };
