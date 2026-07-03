@@ -256,6 +256,7 @@ const vercelVars = {
   VITE_SUPABASE_URL: SUPABASE_URL,
   VITE_SUPABASE_ANON_KEY: anonKey,
   VITE_DEMO_MODE: 'false',
+  VITE_SHOW_DEMO_ACCOUNTS: 'true',
   VITE_STRIPE_PUBLISHABLE_KEY: publishable,
   VITE_STRIPE_PRICE_STARTER: prices.starter,
   VITE_STRIPE_PRICE_PRO: prices.pro,

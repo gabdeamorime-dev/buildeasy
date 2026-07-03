@@ -9,12 +9,14 @@ function sb() {
   return supabase
 }
 
+const SUPABASE_SQL_FIX_URL = 'https://supabase.com/dashboard/project/nvgemgfeaxqocrmzdmzy/sql/new'
+
 /** Message lisible pour erreurs Auth / inscription. */
 export function formatAuthError(err, fallback = 'Opération impossible') {
   const msg = String(err?.message || err || '').toLowerCase()
   if (!msg) return fallback
   if (msg.includes('database error saving new user')) {
-    return 'Erreur base de données à l\'inscription. L\'administrateur doit appliquer la migration Supabase 20260623_fix_signup_trigger.sql (Dashboard → SQL).'
+    return `Erreur base de données à l'inscription. Appliquez le correctif SQL (HOTFIX_SIGNUP_v3) dans Supabase : ${SUPABASE_SQL_FIX_URL} — ou lancez npm run db:fix-signup`
   }
   if (msg.includes('already registered') || msg.includes('already been registered')) {
     return 'Cet email est déjà utilisé'

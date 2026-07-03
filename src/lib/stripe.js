@@ -63,6 +63,11 @@ export async function startStripeCheckout(planId = 'pro') {
   window.location.href = url
 }
 
+/** Après inscription gérant : essai Starter + enregistrement carte. */
+export async function startSignupCheckout() {
+  return startStripeCheckout('starter')
+}
+
 export async function startStripePortal() {
   const url = await callStripeFunction(stripePortalUrl())
   window.location.href = url

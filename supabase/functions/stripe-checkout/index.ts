@@ -43,7 +43,11 @@ serve(async (req) => {
       success_url: `${origin}/app?checkout=success`,
       cancel_url: `${origin}/app?checkout=cancel`,
       metadata: { org_id: profile.org_id, plan_id: plan, user_id: user.id },
-      subscription_data: { trial_period_days: 14, metadata: { org_id: profile.org_id, plan_id: plan } },
+      payment_method_collection: 'always',
+      subscription_data: {
+        trial_period_days: 15,
+        metadata: { org_id: profile.org_id, plan_id: plan },
+      },
     }
 
     if (billing?.stripe_customer_id) {

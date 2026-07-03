@@ -6,7 +6,7 @@ import { previewInvitation, getOrgUsageStats } from "./lib/team.js";
 import TeamPanel from "./ui/TeamPanel.jsx";
 import { loadAppDataForUi } from "./lib/appDataBridge.js";
 import { loadEquipeWithAccounts } from "./lib/team.js";
-import { isStripeConfigured, startStripeCheckout, startStripePortal, BILLING_STATUS_LABELS } from "./lib/stripe.js";
+import { isStripeConfigured, startStripeCheckout, startSignupCheckout, startStripePortal, BILLING_STATUS_LABELS } from "./lib/stripe.js";
 import { fetchBillingSubscription } from "./lib/db.js";
 import { loadAppState, saveAppState, clearAppState, loadLastChId, saveLastChId } from "./lib/persistence.js";
 import { chIdsOf, filterByChAccess, visibleChantiers, isAdmin } from "./lib/access.js";
@@ -15,7 +15,8 @@ import { applyOfflineRemap, mergeMessages } from "./lib/offlineRemap.js";
 import { saveMediaBlob, detectMediaType, MEDIA_LIMITS } from "./lib/mediaStore.js";
 import { messageFromDbRow } from "./lib/appDataBridge.js";
 import ChatMessageBody from "./ui/ChatMessageBody.jsx";
-import { DEMO_COMPTES, isDemoModeEnabled } from "./lib/demoComptes.js";
+import { DEMO_COMPTES, isDemoModeEnabled, getAuthDemoAccounts } from "./lib/demoComptes.js";
+import { trialSignupSubtitle, trialPaymentHint, TRIAL_DAYS } from "./lib/trial.js";
 import { safeHref, safeExternalHref } from "./lib/safeUrl.js";
 import { bindAuthFormScroll } from "./lib/authFormScroll.js";
 import { METEO_PRESETS, AGENDA_TYPES, INCIDENT_TYPES, ModIcon, IcoHome, IcoBuild, IcoTask, IcoChat, IcoMore, IcoPhone, IcoAlert, IcoPlus } from "./ui/icons.jsx";
@@ -1384,7 +1385,10 @@ function LoginScreen({ onLogin, initialMode = "login", onBackToLanding, inviteTo
           : "Compte créé ! Vérifiez votre email pour confirmer, puis connectez-vous.");
         setMode("login");
       } else if (user) {
-        onLogin(user);
+        if (!inviteMode && isStripeConfigured) {
+          sessionStorage.setItem('be_signup_checkout', '1')
+        }
+        onLogin(user)
       }
     } catch (e) {
       setErr(formatAuthError(e, e?.message?.includes("already") ? "Cet email est déjà utilisé" : "Inscription impossible"));
@@ -1434,10 +1438,11 @@ function LoginScreen({ onLogin, initialMode = "login", onBackToLanding, inviteTo
     }
   };
 
-  const showDemoAccounts=!inviteMode&&DEMO_AUTH;
+  const authDemoAccounts = getAuthDemoAccounts();
+  const showDemoAccounts = !inviteMode && authDemoAccounts.length > 0;
 
-  const demoRiches=DEMO_COMPTES.filter(c=>!c.vierge);
-  const demoVierges=DEMO_COMPTES.filter(c=>c.vierge);
+  const demoRiches = authDemoAccounts.filter(c => !c.vierge);
+  const demoVierges = authDemoAccounts.filter(c => c.vierge);
   const roleLabel={admin:"Gérant",chef:"Chef de chantier",employe:"Compagnon",client:"Client MOA"};
   const roleColor={admin:"#152238",chef:"#0e7490",employe:"#047857",client:"#b45309"};
 
@@ -1473,9 +1478,15 @@ function LoginScreen({ onLogin, initialMode = "login", onBackToLanding, inviteTo
               <div style={{fontSize:13,color:"var(--t3)",marginTop:4}}>
                 {inviteMode
                   ? (inviteLoad ? "Chargement de l'invitation…" : invitePreview?.valid ? `${invitePreview.org_name} · ${ROLES[invitePreview.role]?.label || invitePreview.role}` : "Lien d'invitation")
-                  : (mode==="signup"?"15 jours d'essai · Plan Starter":"Accédez à votre espace BuildEasy")}
+                  : (mode==="signup"?trialSignupSubtitle():"Accédez à votre espace BuildEasy")}
               </div>
             </div>
+
+            {mode==="signup"&&!inviteMode&&(
+              <div className="tag tag-blue" style={{display:"block",padding:"10px 12px",marginBottom:12,fontSize:12,lineHeight:1.45}}>
+                {trialPaymentHint()}
+              </div>
+            )}
 
             {!inviteMode ? (
               <div className="auth-tabs">
@@ -1530,13 +1541,16 @@ function LoginScreen({ onLogin, initialMode = "login", onBackToLanding, inviteTo
               </>
             ):(
               <button className="btn btn-ok btn-fw" onClick={signup} disabled={!email||!mdp||!mdp2||!nom||(!inviteMode&&!entreprise)||load||inviteLoad||(inviteMode&&!invitePreview?.valid)}>
-                {load?"Création...":inviteMode?"Rejoindre l'équipe":"Créer mon compte"}
+                {load?"Création...":inviteMode?"Rejoindre l'équipe":`Créer mon compte — ${TRIAL_DAYS} jours gratuits`}
               </button>
             )}
           </div>
 
           {showDemoAccounts&&(
           <>
+          <div style={{fontSize:12,color:"var(--t3)",textAlign:"center",marginTop:16,marginBottom:8,lineHeight:1.45}}>
+            Ou testez sans créer de compte — comptes démo ci-dessous ({TRIAL_DAYS} jours d&apos;essai sur un nouveau compte).
+          </div>
           <div>
             <div className="demo-divider"><span className="demo-pill tag-ok">Comptes prospects</span></div>
             <div className="col gap8">
@@ -4070,9 +4084,9 @@ function AppMobile({ user, onLogout, themeId, setThemeId }) {
     window.history.replaceState({}, "", window.location.pathname+(qs?`?${qs}`:""));
     if(checkout==="success"){
       refreshBilling();
-      alert("Paiement confirmé — votre abonnement sera actif sous quelques secondes.");
+      alert(`Moyen de paiement enregistré — essai gratuit ${TRIAL_DAYS} jours actif. Aucun prélèvement avant la fin de l'essai.`);
     }else if(checkout==="cancel"){
-      alert("Paiement annulé.");
+      alert("Enregistrement du moyen de paiement annulé. Vous pouvez le faire plus tard depuis Plus → Mon abonnement.");
     }
   },[refreshBilling]);
   const empty=!!user.vierge;
@@ -4750,6 +4764,17 @@ function AppMobile({ user, onLogout, themeId, setThemeId }) {
 export default function App({ initialAuthMode = "login", inviteToken = "", onBackToLanding }) {
   const [user,setUser]=useState(null);
   const [themeId,setThemeId]=useState(()=>localStorage.getItem("be_theme")||"ocean");
+
+  useEffect(() => {
+    if (!user?.isSupabase || user.role !== 'admin') return;
+    if (sessionStorage.getItem('be_signup_checkout') !== '1') return;
+    if (!isStripeConfigured) {
+      sessionStorage.removeItem('be_signup_checkout');
+      return;
+    }
+    sessionStorage.removeItem('be_signup_checkout');
+    startSignupCheckout().catch((e) => console.warn('[BuildEasy] checkout inscription:', e?.message));
+  }, [user]);
 
   useEffect(()=>{
     document.documentElement.setAttribute("data-theme",themeId);
