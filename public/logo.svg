@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 160" fill="none" role="img" aria-label="BuildEasy">
+  <defs>
+    <linearGradient id="be-bg" x1="8" y1="8" x2="152" y2="152" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#152238"/>
+      <stop offset="1" stop-color="#1e3d5c"/>
+    </linearGradient>
+    <linearGradient id="be-accent" x1="88" y1="52" x2="120" y2="92" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#ffc14d"/>
+      <stop offset="1" stop-color="#f59e0b"/>
+    </linearGradient>
+  </defs>
+  <g transform="translate(8 8)">
+    <rect width="144" height="144" rx="32" fill="url(#be-bg)"/>
+    <rect x="27" y="104" width="90" height="16" rx="5" fill="#fff" fill-opacity=".92"/>
+    <rect x="36" y="68" width="72" height="32" rx="6" fill="#fff"/>
+    <path d="M42 68V48l30-21 30 21v20H42z" fill="#fff"/>
+    <rect x="82" y="44" width="24" height="24" rx="6" fill="url(#be-accent)"/>
+    <path d="M88 56l6 6 12-14" stroke="#152238" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+  <text x="176" y="98" fill="#152238" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="72" font-weight="800" letter-spacing="-2.5">BuildEasy</text>
+</svg>

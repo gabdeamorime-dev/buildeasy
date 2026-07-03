@@ -26,6 +26,7 @@ import { isRunningStandalone } from "./lib/pwaRegister.js";
 
 const DEMO_AUTH = isDemoModeEnabled();
 const LOGGED_IN_KEY = 'be_logged_in';
+const AUTH_PENDING_KEY = 'be_auth_pending';
 
 function isInstalledApp() {
   return isNative || isRunningStandalone();
@@ -36,6 +37,20 @@ function canAutoRestoreSession() {
   if (isInstalledApp()) return true;
   if (typeof sessionStorage === 'undefined') return false;
   return sessionStorage.getItem(LOGGED_IN_KEY) === '1';
+}
+
+function shouldAcceptAuthUser() {
+  if (canAutoRestoreSession()) return true;
+  if (typeof sessionStorage === 'undefined') return false;
+  return sessionStorage.getItem(LOGGED_IN_KEY) === '1' || sessionStorage.getItem(AUTH_PENDING_KEY) === '1';
+}
+
+function markAuthPending() {
+  if (typeof sessionStorage !== 'undefined') sessionStorage.setItem(AUTH_PENDING_KEY, '1');
+}
+
+function clearAuthPending() {
+  if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem(AUTH_PENDING_KEY);
 }
 
 function markSessionLoggedIn() {
@@ -1321,6 +1336,7 @@ function LoginScreen({ onLogin, initialMode = "login", onBackToLanding, inviteTo
 
   const login = async () => {
     setErr(""); setInfo(""); setLoad(true);
+    markAuthPending();
     const emailNorm = email.trim().toLowerCase();
     if (isSupabaseConfigured) {
       try {
@@ -1335,6 +1351,7 @@ function LoginScreen({ onLogin, initialMode = "login", onBackToLanding, inviteTo
         }
         setErr(formatAuthError(e, e?.message?.includes("invitation") ? e.message : "Email ou mot de passe incorrect"));
       } finally {
+        if (!sessionStorage.getItem(LOGGED_IN_KEY)) clearAuthPending();
         setLoad(false);
       }
       return;
@@ -1344,11 +1361,13 @@ function LoginScreen({ onLogin, initialMode = "login", onBackToLanding, inviteTo
       if (local) { onLogin({ ...local, isLocal: true, chIds: local.chIds || [] }); setLoad(false); return; }
     }
     setErr("Connexion cloud indisponible. Utilisez un compte démo ou configurez Supabase.");
+    clearAuthPending();
     setLoad(false);
   };
 
   const signup = async () => {
     setErr(""); setInfo(""); setLoad(true);
+    markAuthPending();
     if (inviteMode) {
       if (!nom.trim()) { setErr("Votre nom est requis"); setLoad(false); return; }
     } else if (!nom.trim() || !entreprise.trim()) { setErr("Nom et entreprise requis"); setLoad(false); return; }
@@ -1370,6 +1389,7 @@ function LoginScreen({ onLogin, initialMode = "login", onBackToLanding, inviteTo
     } catch (e) {
       setErr(formatAuthError(e, e?.message?.includes("already") ? "Cet email est déjà utilisé" : "Inscription impossible"));
     } finally {
+      if (!sessionStorage.getItem(LOGGED_IN_KEY)) clearAuthPending();
       setLoad(false);
     }
   };
@@ -1391,6 +1411,7 @@ function LoginScreen({ onLogin, initialMode = "login", onBackToLanding, inviteTo
   const quick=async(c)=>{
     if(inviteMode)return;
     setErr(""); setInfo("");
+    markAuthPending();
     if(isSupabaseConfigured){
       setEmail(c.email); setMdp(c.mdp);
       setLoad(true);
@@ -4744,6 +4765,7 @@ export default function App({ initialAuthMode = "login", inviteToken = "", onBac
       const forceAuth = shouldForceAuthScreen(initialAuthMode, inviteToken);
       if (forceAuth || !canAutoRestoreSession()) {
         sessionStorage.removeItem('be_force_auth');
+        clearAuthPending();
         clearSessionLoggedIn();
         await authSignOut().catch(() => {});
         if (!cancelled) setUser(null);
@@ -4752,7 +4774,14 @@ export default function App({ initialAuthMode = "login", inviteToken = "", onBac
         if (!cancelled && u) setUser(u);
       }
       unsub = onAuthChange((u) => {
-        if (u) markSessionLoggedIn();
+        if (u && !shouldAcceptAuthUser()) {
+          authSignOut().catch(() => {});
+          return;
+        }
+        if (u) {
+          clearAuthPending();
+          markSessionLoggedIn();
+        }
         setUser((prev) => {
           if (u) return u;
           if (prev?.isSupabase) return null;
@@ -4769,6 +4798,7 @@ export default function App({ initialAuthMode = "login", inviteToken = "", onBac
 
   const handleLogout=async()=>{
     sessionStorage.removeItem('be_force_auth');
+    clearAuthPending();
     clearSessionLoggedIn();
     if (user?.isSupabase) await authSignOut().catch(() => {});
     setUser(null);

@@ -99,6 +99,7 @@ export default function Root() {
   const enterApp = useCallback((mode = 'login') => {
     sessionStorage.setItem('be_force_auth', '1')
     sessionStorage.removeItem('be_logged_in')
+    sessionStorage.removeItem('be_auth_pending')
     const ref = sessionStorage.getItem(REF_KEY)
     const params = new URLSearchParams()
     if (mode === 'signup') params.set('mode', 'signup')
