@@ -26,13 +26,14 @@ import { createClient } from '@supabase/supabase-js'
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const PROJECT_REF = 'nvgemgfeaxqocrmzdmzy'
 const migrationRel = 'supabase/migrations/20260623_fix_signup_trigger.sql'
-const hotfixRel = 'supabase/HOTFIX_SIGNUP_v3.sql'
+const hotfixRel = 'supabase/HOTFIX_SIGNUP_v4.sql'
+const hotfixV3 = 'supabase/HOTFIX_SIGNUP_v3.sql'
 const hotfixV2 = 'supabase/HOTFIX_SIGNUP_v2.sql'
 const hotfixLegacy = 'supabase/HOTFIX_SIGNUP.sql'
 const migrationPath = resolve(root, migrationRel)
-const hotfixPath = resolve(root, hotfixRel)
 const sql = readFileSync(
   existsSync(resolve(root, hotfixRel)) ? resolve(root, hotfixRel)
+    : existsSync(resolve(root, hotfixV3)) ? resolve(root, hotfixV3)
     : existsSync(resolve(root, hotfixV2)) ? resolve(root, hotfixV2)
     : existsSync(resolve(root, hotfixLegacy)) ? resolve(root, hotfixLegacy)
     : resolve(root, migrationRel),
@@ -59,7 +60,8 @@ function loadEnv() {
 function printManualInstructions() {
   console.log('\n── Appliquer manuellement (2 min) ──\n')
   console.log(`1. Ouvrir : ${dashboardSql}`)
-  console.log(`2. Coller le SQL depuis : supabase/HOTFIX_SIGNUP_v3.sql`)
+  console.log(`2. Coller le SQL depuis : supabase/HOTFIX_SIGNUP_v4.sql`)
+  console.log('   (ou lancez : npm run db:open-signup-fix — copie auto + ouvre le navigateur)')
   console.log('3. Cliquer Run')
   console.log('4. Réessayer l\'inscription dans l\'app\n')
   console.log('─'.repeat(60))
@@ -159,6 +161,20 @@ async function main() {
     if (/password authentication failed/i.test(e.message)) {
       console.error('   Vérifiez SUPABASE_DB_PASSWORD (Dashboard → Database → password).')
     }
+  }
+
+  try {
+    execSync('npx supabase --version', { stdio: 'pipe', cwd: root })
+    console.log('→ supabase db execute (project ref)…\n')
+    execSync(
+      `npx supabase db execute --project-ref ${PROJECT_REF} --file supabase/HOTFIX_SIGNUP_v4.sql`,
+      { stdio: 'inherit', cwd: root, env: { ...env, SUPABASE_ACCESS_TOKEN: env.SUPABASE_ACCESS_TOKEN || '' } },
+    )
+    console.log('\n✅ Migration appliquée via Supabase CLI.')
+    await verifySignup(env)
+    return
+  } catch (e) {
+    console.log('⚠ supabase db execute échoué —', e.message?.split('\n')[0] || 'CLI non lié')
   }
 
   try {
