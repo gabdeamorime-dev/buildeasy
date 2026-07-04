@@ -2221,8 +2221,8 @@ function TachesScreen({ user, perms, taches, chantiers, equipe, onEditT, onSheet
   );
 }
 function FinancesScreen({ user, perms, factures, chantiers, heures, equipe, commandes, onSheet, onChangeStatut, onPrint }) {
-  if(!perms.finances) return <div className="empty" style={{paddingTop:80}}><p style={{fontSize:14,fontWeight:600}}>Accès restreint</p></div>;
   const [chF,setChF]=useState("tous");
+  if(!perms.finances) return <div className="empty" style={{paddingTop:80}}><p style={{fontSize:14,fontWeight:600}}>Accès restreint</p></div>;
   const myCh=visibleChantiers(user, chantiers);
   const baseFactures=filterByChAccess(user, factures);
   const vis=chF==="tous"?baseFactures:baseFactures.filter(f=>f.chId===parseInt(chF));
@@ -2349,7 +2349,6 @@ function FinancesScreen({ user, perms, factures, chantiers, heures, equipe, comm
 }
 
 function ChatScreen({ user, perms, messages, chantiers, onSend, onSendMedia, onIncoming, onSheet, initialChId, online }) {
-  if(!perms.chat) return <div className="empty" style={{paddingTop:80}}><p style={{fontSize:14}}>Accès non disponible</p></div>;
   const myCh=(user.role==="admin"?chantiers:chantiers.filter(c=>chIdsOf(user).includes(c.id))).filter(c=>c.statut!=="livre");
   const [chId,setChId]=useState(()=>String(initialChId||myCh[0]?.id||""));
   useEffect(()=>{if(initialChId)setChId(String(initialChId));},[initialChId]);
@@ -2358,10 +2357,7 @@ function ChatScreen({ user, perms, messages, chantiers, onSend, onSendMedia, onI
   const ref=useRef(null);
   const fileRef=useRef(null);
   const msgs=messages.filter(m=>m.chId===parseInt(chId));
-  const ch=chantiers.find(c=>c.id===parseInt(chId));
-  const rc={admin:"#2563EB",chef:"#0891B2",employe:"#059669",client:"#D97706"};
   useEffect(()=>{ ref.current?.scrollIntoView({behavior:"smooth"}); },[msgs.length,chId]);
-
   useEffect(()=>{
     if(!isSupabaseConfigured||!supabase||!chId||!onIncoming)return;
     const cid=parseInt(chId,10);
@@ -2373,6 +2369,9 @@ function ChatScreen({ user, perms, messages, chantiers, onSend, onSendMedia, onI
       .subscribe();
     return()=>{supabase.removeChannel(channel);};
   },[chId,onIncoming]);
+  if(!perms.chat) return <div className="empty" style={{paddingTop:80}}><p style={{fontSize:14}}>Accès non disponible</p></div>;
+  const ch=chantiers.find(c=>c.id===parseInt(chId));
+  const rc={admin:"#2563EB",chef:"#0891B2",employe:"#059669",client:"#D97706"};
 
   const nowFields=()=>({
     h:new Date().toLocaleTimeString("fr-FR",{hour:"2-digit",minute:"2-digit"}),
@@ -2462,9 +2461,9 @@ function AvenantsScreen({ user, perms, avenants, chantiers, onValider, onSheet }
 }
 
 function HeuresScreen({ user, perms, heures, chantiers, equipe, onValider, onSheet, onPrint }) {
-  if(!perms.heures) return <div className="empty" style={{paddingTop:80}}><p style={{fontSize:14}}>Accès non disponible</p></div>;
   const today=new Date();
   const [off,setOff]=useState(0);
+  if(!perms.heures) return <div className="empty" style={{paddingTop:80}}><p style={{fontSize:14}}>Accès non disponible</p></div>;
   const getLundi=o=>{const d=new Date(today);const day=d.getDay();d.setDate(d.getDate()+(day===0?-6:1-day)+o*7);d.setHours(0,0,0,0);return d;};
   const lundi=getLundi(off);
   const JOURS=["Lun","Mar","Mer","Jeu","Ven","Sam","Dim"];
@@ -2618,8 +2617,8 @@ function HeuresScreen({ user, perms, heures, chantiers, equipe, onValider, onShe
   );
 }
 function PunchScreen({ user, perms, punch, chantiers, onUpdate }) {
-  if(!perms.punch) return <div className="empty" style={{paddingTop:80}}><p style={{fontSize:14}}>Accès non disponible</p></div>;
   const [f,setF]=useState("tous");
+  if(!perms.punch) return <div className="empty" style={{paddingTop:80}}><p style={{fontSize:14}}>Accès non disponible</p></div>;
   const visible=(user.role==="admin"?punch:punch.filter(p=>chIdsOf(user).includes(p.chId))).filter(p=>f==="tous"||p.statut===f);
   const sfM={ouvert:{l:"Ouvert",t:"err",c:"var(--err)"},encours:{l:"En cours",t:"warn",c:"var(--warn)"},clos:{l:"Clos",t:"ok",c:"var(--ok)"}};
   return (
@@ -2744,8 +2743,8 @@ function SituationsScreen({ user, perms, situations, chantiers, onSave, onChange
 }
 
 function IncidentsScreen({ user, perms, incidents, chantiers, commandes, equipe, onUpdate, onEdit, onCancel, onNav, onSheet }) {
-  if(!perms.incidents) return <div className="empty" style={{paddingTop:80}}><p style={{fontSize:14,fontWeight:600}}>Accès restreint</p></div>;
   const [filtre,setFiltre]=useState("ouvert");
+  if(!perms.incidents) return <div className="empty" style={{paddingTop:80}}><p style={{fontSize:14,fontWeight:600}}>Accès restreint</p></div>;
   const base=user.role==="admin"?incidents:incidents.filter(i=>chIdsOf(user).includes(i.chId));
   const vis=base.filter(i=>filtre==="tous"?true:i.statut===filtre).sort((a,b)=>(a.statut==="ouvert"?0:1)-(b.statut==="ouvert"?0:1)||(a.prio||3)-(b.prio||3)||(b.ts||0)-(a.ts||0));
   const nbOuv=base.filter(i=>i.statut==="ouvert").length;
@@ -3113,9 +3112,9 @@ function PlusScreen({ user, perms, data, onNav, onLogout, onUpdEq, themeId, setT
    DEVIS — Création, lots, transformation en chantier
 ═══════════════════════════════════════ */
 function DevisScreen({ user, perms, devis, chantiers, onAddDevis, onConvertDevis, onChangeStatut, onEditDevis, onPrint }) {
-  if(!perms.montants) return <div className="empty" style={{paddingTop:80}}><p style={{fontSize:14,fontWeight:600}}>Accès restreint</p></div>;
   const [selId,setSelId] = useState(null);
   const [showEdit,setShowEdit] = useState(false);
+  if(!perms.montants) return <div className="empty" style={{paddingTop:80}}><p style={{fontSize:14,fontWeight:600}}>Accès restreint</p></div>;
   const setSel = id => { setSelId(id); setShowEdit(false); };
   const sfM = {brouillon:{l:"Brouillon",t:"gray"},envoye:{l:"Envoyé",t:"blue"},accepte:{l:"Accepté",t:"ok"},refuse:{l:"Refusé",t:"err"}};
 
@@ -3282,9 +3281,9 @@ function DevisScreen({ user, perms, devis, chantiers, onAddDevis, onConvertDevis
    COMMANDES FOURNISSEURS
 ═══════════════════════════════════════ */
 function CommandesScreen({ user, perms, commandes, chantiers, fournisseurs, onAddCmd, onReception, onSheet }) {
-  if(!perms.montants && !perms.creerCmd) return <div className="empty" style={{paddingTop:80}}><p style={{fontSize:14,fontWeight:600}}>Accès restreint</p></div>;
   const [chF,setChF]=useState("tous");
   const [q,setQ]=useState("");
+  if(!perms.montants && !perms.creerCmd) return <div className="empty" style={{paddingTop:80}}><p style={{fontSize:14,fontWeight:600}}>Accès restreint</p></div>;
   const sfM = {attente:{l:"En attente",t:"warn"},commandee:{l:"Commandée",t:"blue"},livree:{l:"Livrée",t:"ok"},annulee:{l:"Annulée",t:"err"}};
   const base = user.role==="admin"?commandes:commandes.filter(c=>chIdsOf(user).includes(c.chId));
   const visible = base
@@ -3719,11 +3718,11 @@ function FFournisseur({ fourn, onClose, onSave }) {
 }
 
 function FournisseursScreen({ user, perms, fournisseurs, commandes, onAdd, onEdit, onDel }) {
-  if(!perms.equipe) return <div className="empty" style={{paddingTop:80}}><p style={{fontSize:14,fontWeight:600}}>Accès restreint</p></div>;
   const [selCat,setSelCat]=useState("tous");
   const [q,setQ]=useState("");
   const [editF,setEditF]=useState(null);
   const [showAdd,setShowAdd]=useState(false);
+  if(!perms.equipe) return <div className="empty" style={{paddingTop:80}}><p style={{fontSize:14,fontWeight:600}}>Accès restreint</p></div>;
   const catLabel={materiaux:"Matériaux",plomberie:"Plomberie",electricite:"Électricité",location:"Location",enduits:"Enduits",bois:"Bois",autre:"Autre"};
   const catIco={materiaux:"🧱",plomberie:"🔵",electricite:"⚡",location:"🏗",enduits:"🪣",bois:"🪵",autre:"📦"};
   const cats=["tous",...[...new Set(fournisseurs.map(f=>f.cat))]];
@@ -3786,9 +3785,9 @@ function FournisseursScreen({ user, perms, fournisseurs, commandes, onAdd, onEdi
 }
 
 function ClientsScreen({ user, perms, clients, onSheet }) {
-  if(!perms.montants) return <div className="empty" style={{paddingTop:80}}><p style={{fontSize:14,fontWeight:600}}>Accès restreint</p></div>;
   const [q,setQ]=useState("");
   const [f,setF]=useState("tous");
+  if(!perms.montants) return <div className="empty" style={{paddingTop:80}}><p style={{fontSize:14,fontWeight:600}}>Accès restreint</p></div>;
   const visible=clients.filter(c=>(f==="tous"||c.statut===f)&&(c.nom+c.email+(c.note||"")).toLowerCase().includes(q.toLowerCase()));
   const sfM={client:{l:"Client",t:"ok"},prospect:{l:"Prospect",t:"blue"},termine:{l:"Terminé",t:"gray"},perdu:{l:"Perdu",t:"err"}};
   const totalCA=clients.filter(c=>c.statut==="client").reduce((s,c)=>s+c.ca,0);
@@ -4836,7 +4835,6 @@ export default function App({ initialAuthMode = "login", inviteToken = "", onBac
     if (user?.isSupabase) await authSignOut().catch(() => {});
     else purgeSupabaseAuthStorage();
     setUser(null);
-    onBackToLanding?.();
   };
 
   const handleLogin=(u)=>{

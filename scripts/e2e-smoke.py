@@ -23,7 +23,9 @@ def logout(page):
     page.wait_for_timeout(400)
     page.get_by_role("button", name="Se déconnecter").click()
     page.wait_for_timeout(500)
-    expect(page.get_by_placeholder("Email")).to_be_visible()
+    email_inp = page.get_by_placeholder("Email professionnel").or_(page.get_by_placeholder("Email"))
+    expect(email_inp.first).to_be_visible()
+    expect(page).to_have_url(f"{BASE}/app")
 
 
 def nav(page, label):
@@ -108,9 +110,9 @@ def main():
         # ── 9. Chef — chantiers filtrés ──
         login(page, "chef@buildeasy.eu", "chef123")
         nav(page, "Chantiers")
-        expect(page.get_by_text("Rénovation Villa Dupont")).to_be_visible()
+        expect(page.get_by_text("Rénovation Villa Dupont", exact=True).first).to_be_visible()
         # Martin (chId 2) ne devrait pas être visible pour chef chIds [1,5]
-        expect(page.get_by_text("Extension Pavillon Martin")).not_to_be_visible()
+        expect(page.get_by_text("Extension Pavillon Martin", exact=True)).not_to_be_visible()
         results.append("✓ Chef — filtrage chIds OK")
         logout(page)
 
